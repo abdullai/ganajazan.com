@@ -1,0 +1,49 @@
+﻿{
+  "@@locale": "ar",
+
+  "appTitle": "تطبيق توثيق العقار",
+
+  "welcomeTitle": "مرحباً بك",
+  "welcomeTrustedAqar": "مرحباً بك في عقار موثوق",
+
+  "signInToContinue": "سجّل الدخول للمتابعة",
+  "userSignIn": "تسجيل الدخول",
+
+  "allFieldsRequired": "يرجى تعبئة جميع الحقول",
+  "usernameMustBe10Digits": "اسم المستخدم يجب أن يكون 10 أرقام",
+  "passwordTooShort": "كلمة المرور قصيرة جداً",
+  "invalidCredentials": "بيانات الدخول غير صحيحة",
+
+  "rememberMe": "تذكرني",
+  "quickLogin": "دخول سريع",
+  "forgotUsernameOrPassword": "نسيت اسم المستخدم أو كلمة المرور؟",
+
+  "themeLight": "فاتح",
+  "themeDark": "داكن",
+  "themeSystem": "حسب النظام",
+
+  "languageArabic": "العربية",
+  "languageEnglish": "English",
+  "settings": "الإعدادات",
+
+  "usernameHint10Digits": "رقم الهوية/الإقامة (10 أرقام)",
+  "passwordHint": "كلمة المرور",
+
+  "rightPanelTitle": "توثيق عقارك بسهولة",
+  "rightPanelSubtitle": "استعرض العقارات وتواصل واطّلع على الإعلانات من داخل التطبيق.",
+  "noEnabledAds": "لا توجد إعلانات مفعلة حالياً",
+
+  "accountLockedTitle": "تم قفل الحساب",
+  "accountLockedBody": "تم قفل الحساب بسبب محاولات دخول متعددة. استخدم الاستعادة.",
+  "recover": "استعادة",
+
+  "verifyTitle": "التحقق",
+  "verifySubtitle": "أدخل رمز التحقق",
+  "confirm": "تأكيد",
+  "clear": "مسح",
+  "securityAlert": "تنبيه أمني",
+  "verifyTimeout": "انتهت مدة التحقق",
+
+  "invalidCode": "رمز التحقق غير صحيح",
+  "accountLocked": "تم قفل الحساب"
+}

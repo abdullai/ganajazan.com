@@ -1,0 +1,49 @@
+﻿{
+  "@@locale": "en",
+
+  "appTitle": "Aqar User",
+
+  "welcomeTitle": "Welcome",
+  "welcomeTrustedAqar": "Welcome to Trusted Aqar",
+
+  "signInToContinue": "Sign in to continue",
+  "userSignIn": "Sign In",
+
+  "allFieldsRequired": "Please fill in all fields",
+  "usernameMustBe10Digits": "Username must be 10 digits",
+  "passwordTooShort": "Password is too short",
+  "invalidCredentials": "Invalid credentials",
+
+  "rememberMe": "Remember me",
+  "quickLogin": "Quick login",
+  "forgotUsernameOrPassword": "Forgot username or password?",
+
+  "themeLight": "Light",
+  "themeDark": "Dark",
+  "themeSystem": "System",
+
+  "languageArabic": "العربية",
+  "languageEnglish": "English",
+  "settings": "Settings",
+
+  "usernameHint10Digits": "National ID / Iqama (10 digits)",
+  "passwordHint": "Password",
+
+  "rightPanelTitle": "Verify your property easily",
+  "rightPanelSubtitle": "Browse listings, chat, and view ads inside the app.",
+  "noEnabledAds": "No enabled ads right now",
+
+  "accountLockedTitle": "Account locked",
+  "accountLockedBody": "Your account is locked due to multiple attempts. Use recovery.",
+  "recover": "Recover",
+
+  "verifyTitle": "Verification",
+  "verifySubtitle": "Enter the verification code",
+  "confirm": "Confirm",
+  "clear": "Clear",
+  "securityAlert": "Security alert",
+  "verifyTimeout": "Verification timed out",
+
+  "invalidCode": "Invalid verification code",
+  "accountLocked": "Account locked"
+}
