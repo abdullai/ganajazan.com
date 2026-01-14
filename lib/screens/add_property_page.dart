@@ -1,4 +1,6 @@
-﻿// lib/pages/add_property_page.dart
+﻿// lib/screens/add_property_page.dart
+
+import 'dart:typed_data';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
@@ -7,7 +9,14 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:uuid/uuid.dart';
 
 class AddPropertyPage extends StatefulWidget {
-  const AddPropertyPage({super.key});
+  final String userId;
+  final String lang;
+
+  const AddPropertyPage({
+    super.key,
+    required this.userId,
+    required this.lang,
+  });
 
   @override
   State<AddPropertyPage> createState() => _AddPropertyPageState();
@@ -29,7 +38,7 @@ class _AddPropertyPageState extends State<AddPropertyPage> {
   bool _isAuction = false;
   final _currentBid = TextEditingController();
 
-  // DB enum still exists -> keep it but not used as tabs in dashboard
+  // DB enum exists
   String _type = 'villa'; // 'villa' | 'apartment' | 'land'
 
   bool _saving = false;
@@ -37,6 +46,8 @@ class _AddPropertyPageState extends State<AddPropertyPage> {
 
   // picked images
   final List<_PickedImage> _images = [];
+
+  bool get _isAr => widget.lang == 'ar';
 
   @override
   void dispose() {
@@ -61,34 +72,25 @@ class _AddPropertyPageState extends State<AddPropertyPage> {
       final res = await FilePicker.platform.pickFiles(
         allowMultiple: true,
         type: FileType.image,
-        withData: true, // مهم: عشان Web + Mobile نفس الكود
+        withData: true, // مهم للويب
       );
 
       if (res == null) return;
 
       final newOnes = res.files
-          .where((f) => f.bytes != null && (f.name.isNotEmpty))
-          .map((f) => _PickedImage(
-                name: f.name,
-                bytes: f.bytes!,
-              ))
+          .where((f) => f.bytes != null && f.name.isNotEmpty)
+          .map((f) => _PickedImage(name: f.name, bytes: f.bytes!))
           .toList();
 
       if (newOnes.isEmpty) return;
 
-      setState(() {
-        _images.addAll(newOnes);
-      });
+      setState(() => _images.addAll(newOnes));
     } catch (e) {
       setState(() => _error = e.toString());
     }
   }
 
-  void _removeImageAt(int i) {
-    setState(() {
-      _images.removeAt(i);
-    });
-  }
+  void _removeImageAt(int i) => setState(() => _images.removeAt(i));
 
   void _moveImage(int from, int to) {
     setState(() {
@@ -102,12 +104,12 @@ class _AddPropertyPageState extends State<AddPropertyPage> {
     return double.tryParse(v) ?? 0;
   }
 
-  Future<void> _submit({required bool isAr}) async {
+  Future<void> _submit() async {
     setState(() => _error = null);
 
     final user = _sb.auth.currentUser;
     if (user == null) {
-      setState(() => _error = isAr ? 'يجب تسجيل الدخول أولاً' : 'You must sign in first');
+      setState(() => _error = _isAr ? 'يجب تسجيل الدخول أولاً' : 'You must sign in first');
       return;
     }
 
@@ -115,14 +117,15 @@ class _AddPropertyPageState extends State<AddPropertyPage> {
     if (!ok) return;
 
     if (_images.isEmpty) {
-      setState(() => _error = isAr ? 'اختر صورة واحدة على الأقل' : 'Pick at least one image');
+      setState(() => _error = _isAr ? 'اختر صورة واحدة على الأقل' : 'Pick at least one image');
       return;
     }
 
     setState(() => _saving = true);
 
     try {
-      final ownerId = user.id;
+      // إن كان userId المُمرر موجود (من الداشبورد) استخدمه، وإلا استخدم currentUser.id
+      final ownerId = (widget.userId.trim().isNotEmpty) ? widget.userId.trim() : user.id;
 
       // 1) Insert property (get id)
       final inserted = await _sb
@@ -133,7 +136,7 @@ class _AddPropertyPageState extends State<AddPropertyPage> {
             'description': _desc.text.trim(),
             'location': _location.text.trim(),
             'city': _city.text.trim(),
-            'type': _type, // موجود في جدولك
+            'type': _type,
             'area': _parseDouble(_area.text),
             'price': _parseDouble(_price.text),
             'is_auction': _isAuction,
@@ -146,7 +149,7 @@ class _AddPropertyPageState extends State<AddPropertyPage> {
 
       final propertyId = inserted['id'] as String;
 
-      // 2) Upload images to storage + insert property_images
+      // 2) Upload images + insert property_images
       final bucket = _sb.storage.from('property-images');
       final uuid = const Uuid();
 
@@ -161,7 +164,6 @@ class _AddPropertyPageState extends State<AddPropertyPage> {
 
         final contentType = _guessContentType(ext);
 
-        // uploadBinary works for Web/Mobile with Uint8List
         await bucket.uploadBinary(
           path,
           img.bytes,
@@ -185,9 +187,7 @@ class _AddPropertyPageState extends State<AddPropertyPage> {
       if (!mounted) return;
 
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(isAr ? 'تم نشر الإعلان بنجاح' : 'Listing published successfully'),
-        ),
+        SnackBar(content: Text(_isAr ? 'تم نشر الإعلان بنجاح' : 'Listing published successfully')),
       );
 
       Navigator.pop(context, true);
@@ -204,10 +204,8 @@ class _AddPropertyPageState extends State<AddPropertyPage> {
     if (dot == -1) return 'jpg';
     final ext = n.substring(dot + 1).trim();
     if (ext.isEmpty) return 'jpg';
-    // normalize
     if (ext == 'jpeg') return 'jpg';
     return ext;
-    // allow: jpg/png/webp...
   }
 
   String _guessContentType(String ext) {
@@ -226,21 +224,17 @@ class _AddPropertyPageState extends State<AddPropertyPage> {
 
   @override
   Widget build(BuildContext context) {
-    final args = (ModalRoute.of(context)?.settings.arguments as Map?) ?? {};
-    final String lang = (args['lang'] as String?) ?? 'ar';
-    final bool isAr = lang == 'ar';
-
     final cs = Theme.of(context).colorScheme;
 
     return Directionality(
-      textDirection: isAr ? TextDirection.rtl : TextDirection.ltr,
+      textDirection: _isAr ? TextDirection.rtl : TextDirection.ltr,
       child: Scaffold(
         backgroundColor: cs.surface,
         appBar: AppBar(
-          title: Text(isAr ? 'إضافة إعلان' : 'Add Listing'),
+          title: Text(_isAr ? 'إضافة إعلان' : 'Add Listing'),
           actions: [
             IconButton(
-              tooltip: isAr ? 'اختيار صور' : 'Pick images',
+              tooltip: _isAr ? 'اختيار صور' : 'Pick images',
               icon: const Icon(Icons.photo_library_outlined),
               onPressed: _saving ? null : _pickImages,
             ),
@@ -263,23 +257,21 @@ class _AddPropertyPageState extends State<AddPropertyPage> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
-                        _HeaderCard(isAr: isAr),
-
+                        _HeaderCard(isAr: _isAr),
                         const SizedBox(height: 12),
 
                         _ImagesCard(
-                          isAr: isAr,
+                          isAr: _isAr,
                           images: _images,
                           saving: _saving,
                           onPick: _pickImages,
                           onRemove: _removeImageAt,
                           onMove: _moveImage,
                         ),
-
                         const SizedBox(height: 12),
 
                         _FormCard(
-                          isAr: isAr,
+                          isAr: _isAr,
                           formKey: _formKey,
                           title: _title,
                           desc: _desc,
@@ -299,30 +291,23 @@ class _AddPropertyPageState extends State<AddPropertyPage> {
                           },
                           onTypeChanged: (v) => setState(() => _type = v),
                         ),
-
                         const SizedBox(height: 12),
 
-                        if (_error != null)
-                          _ErrorBox(
-                            text: _error!,
-                            isAr: isAr,
-                          ),
-
+                        if (_error != null) _ErrorBox(text: _error!, isAr: _isAr),
                         const SizedBox(height: 12),
 
                         _SubmitBar(
-                          isAr: isAr,
+                          isAr: _isAr,
                           saving: _saving,
                           enabled: _canSubmit,
-                          onSubmit: () => _submit(isAr: isAr),
+                          onSubmit: _submit,
                         ),
 
                         const SizedBox(height: 18),
 
-                        // ملاحظة بسيطة للويب
                         if (kIsWeb)
                           Text(
-                            isAr
+                            _isAr
                                 ? 'ملاحظة: على الويب، اختر صورك من الجهاز وسيتم رفعها مباشرة إلى التخزين.'
                                 : 'Note: On web, images are picked from your device and uploaded to storage.',
                             textAlign: TextAlign.center,
@@ -358,12 +343,12 @@ class _HeaderCard extends StatelessWidget {
       decoration: BoxDecoration(
         color: cs.surface,
         borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: cs.outlineVariant.withValues(alpha: 115)), // 0.45
+        border: Border.all(color: cs.outlineVariant.withValues(alpha: 115)),
         boxShadow: [
           BoxShadow(
             blurRadius: 18,
             offset: const Offset(0, 10),
-            color: cs.shadow.withValues(alpha: 20), // 0.08
+            color: cs.shadow.withValues(alpha: 20),
           )
         ],
       ),
@@ -374,7 +359,7 @@ class _HeaderCard extends StatelessWidget {
             width: 44,
             height: 44,
             decoration: BoxDecoration(
-              color: cs.primary.withValues(alpha: 26), // 0.10
+              color: cs.primary.withValues(alpha: 26),
               borderRadius: BorderRadius.circular(14),
             ),
             child: Icon(Icons.add_home_work_outlined, color: cs.primary),
@@ -386,16 +371,12 @@ class _HeaderCard extends StatelessWidget {
               children: [
                 Text(
                   isAr ? 'انشر إعلانك' : 'Publish your listing',
-                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                        fontWeight: FontWeight.w900,
-                      ),
+                  style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w900),
                 ),
                 const SizedBox(height: 4),
                 Text(
                   isAr ? 'املأ الحقول الإلزامية وأضف صورًا واضحة.' : 'Fill required fields and add clear images.',
-                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                        color: cs.onSurfaceVariant,
-                      ),
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(color: cs.onSurfaceVariant),
                 ),
               ],
             ),
@@ -431,7 +412,7 @@ class _ImagesCard extends StatelessWidget {
       decoration: BoxDecoration(
         color: cs.surface,
         borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: cs.outlineVariant.withValues(alpha: 115)), // 0.45
+        border: Border.all(color: cs.outlineVariant.withValues(alpha: 115)),
       ),
       padding: const EdgeInsets.all(14),
       child: Column(
@@ -441,9 +422,7 @@ class _ImagesCard extends StatelessWidget {
             children: [
               Text(
                 isAr ? 'الصور (إلزامي)' : 'Images (required)',
-                style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                      fontWeight: FontWeight.w900,
-                    ),
+                style: Theme.of(context).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w900),
               ),
               const Spacer(),
               OutlinedButton.icon(
@@ -458,9 +437,9 @@ class _ImagesCard extends StatelessWidget {
             Container(
               padding: const EdgeInsets.all(14),
               decoration: BoxDecoration(
-                color: cs.surfaceContainerHighest.withValues(alpha: 153), // 0.60
+                color: cs.surfaceContainerHighest.withValues(alpha: 153),
                 borderRadius: BorderRadius.circular(14),
-                border: Border.all(color: cs.outlineVariant.withValues(alpha: 89)), // 0.35
+                border: Border.all(color: cs.outlineVariant.withValues(alpha: 89)),
               ),
               child: Row(
                 children: [
@@ -469,9 +448,7 @@ class _ImagesCard extends StatelessWidget {
                   Expanded(
                     child: Text(
                       isAr ? 'لم يتم اختيار صور بعد' : 'No images selected yet',
-                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                            color: cs.onSurfaceVariant,
-                          ),
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(color: cs.onSurfaceVariant),
                     ),
                   ),
                 ],
@@ -497,9 +474,7 @@ class _ImagesCard extends StatelessWidget {
           const SizedBox(height: 8),
           Text(
             isAr ? 'رتّب الصور: الصورة الأولى هي الغلاف.' : 'Reorder: first image is the cover.',
-            style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                  color: cs.onSurfaceVariant,
-                ),
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(color: cs.onSurfaceVariant),
           ),
         ],
       ),
@@ -549,16 +524,12 @@ class _ImageThumb extends StatelessWidget {
                     child: Container(
                       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                       decoration: BoxDecoration(
-                        color: Colors.black.withValues(alpha: 115), // 0.45
+                        color: Colors.black.withValues(alpha: 115),
                         borderRadius: BorderRadius.circular(999),
                       ),
                       child: Text(
                         index == 0 ? (isAr ? 'غلاف' : 'Cover') : '${index + 1}/$total',
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontWeight: FontWeight.w900,
-                          fontSize: 12,
-                        ),
+                        style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w900, fontSize: 12),
                       ),
                     ),
                   ),
@@ -651,7 +622,7 @@ class _FormCard extends StatelessWidget {
       decoration: BoxDecoration(
         color: cs.surface,
         borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: cs.outlineVariant.withValues(alpha: 115)), // 0.45
+        border: Border.all(color: cs.outlineVariant.withValues(alpha: 115)),
       ),
       padding: const EdgeInsets.all(14),
       child: Form(
@@ -661,13 +632,10 @@ class _FormCard extends StatelessWidget {
           children: [
             Text(
               isAr ? 'تفاصيل الإعلان (إلزامي)' : 'Listing details (required)',
-              style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                    fontWeight: FontWeight.w900,
-                  ),
+              style: Theme.of(context).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w900),
             ),
             const SizedBox(height: 12),
 
-            // Title
             _Field(
               controller: title,
               enabled: !saving,
@@ -678,7 +646,6 @@ class _FormCard extends StatelessWidget {
             ),
             const SizedBox(height: 10),
 
-            // Description
             _Field(
               controller: desc,
               enabled: !saving,
@@ -689,48 +656,39 @@ class _FormCard extends StatelessWidget {
             ),
             const SizedBox(height: 10),
 
-            // Location + City
             LayoutBuilder(
               builder: (context, c) {
                 final wide = c.maxWidth >= 820;
-                final children = <Widget>[
-                  Expanded(
-                    child: _Field(
-                      controller: location,
-                      enabled: !saving,
-                      label: isAr ? 'الموقع' : 'Location',
-                      hint: isAr ? 'مثال: الرياض - حطين' : 'e.g. Riyadh - Hittin',
-                      validator: (v) => _req(v, isAr ? 'الموقع مطلوب' : 'Location is required'),
-                      maxLines: 1,
-                    ),
+
+                final locationField = Expanded(
+                  child: _Field(
+                    controller: location,
+                    enabled: !saving,
+                    label: isAr ? 'الموقع' : 'Location',
+                    hint: isAr ? 'مثال: الرياض - حطين' : 'e.g. Riyadh - Hittin',
+                    validator: (v) => _req(v, isAr ? 'الموقع مطلوب' : 'Location is required'),
+                    maxLines: 1,
                   ),
-                  const SizedBox(width: 10, height: 10),
-                  Expanded(
-                    child: _Field(
-                      controller: city,
-                      enabled: !saving,
-                      label: isAr ? 'المدينة' : 'City',
-                      hint: isAr ? 'مثال: الرياض' : 'e.g. Riyadh',
-                      validator: (v) => _req(v, isAr ? 'المدينة مطلوبة' : 'City is required'),
-                      maxLines: 1,
-                    ),
+                );
+
+                final cityField = Expanded(
+                  child: _Field(
+                    controller: city,
+                    enabled: !saving,
+                    label: isAr ? 'المدينة' : 'City',
+                    hint: isAr ? 'مثال: الرياض' : 'e.g. Riyadh',
+                    validator: (v) => _req(v, isAr ? 'المدينة مطلوبة' : 'City is required'),
+                    maxLines: 1,
                   ),
-                ];
+                );
 
                 return wide
-                    ? Row(children: children)
-                    : Column(
-                        children: [
-                          children[0],
-                          const SizedBox(height: 10),
-                          children[2],
-                        ],
-                      );
+                    ? Row(children: [locationField, const SizedBox(width: 10), cityField])
+                    : Column(children: [locationField, const SizedBox(height: 10), cityField]);
               },
             ),
             const SizedBox(height: 10),
 
-            // Area + Price
             LayoutBuilder(
               builder: (context, c) {
                 final wide = c.maxWidth >= 820;
@@ -760,26 +718,12 @@ class _FormCard extends StatelessWidget {
                 );
 
                 return wide
-                    ? Row(
-                        children: [
-                          areaField,
-                          const SizedBox(width: 10),
-                          priceField,
-                        ],
-                      )
-                    : Column(
-                        children: [
-                          areaField,
-                          const SizedBox(height: 10),
-                          priceField,
-                        ],
-                      );
+                    ? Row(children: [areaField, const SizedBox(width: 10), priceField])
+                    : Column(children: [areaField, const SizedBox(height: 10), priceField]);
               },
             ),
-
             const SizedBox(height: 12),
 
-            // Type + Auction
             LayoutBuilder(
               builder: (context, c) {
                 final wide = c.maxWidth >= 820;
@@ -803,7 +747,7 @@ class _FormCard extends StatelessWidget {
                     padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
                     decoration: BoxDecoration(
                       borderRadius: BorderRadius.circular(14),
-                      border: Border.all(color: cs.outlineVariant.withValues(alpha: 140)), // 0.55
+                      border: Border.all(color: cs.outlineVariant.withValues(alpha: 140)),
                       color: cs.surface,
                     ),
                     child: Row(
@@ -813,9 +757,7 @@ class _FormCard extends StatelessWidget {
                         Expanded(
                           child: Text(
                             isAr ? 'هذا الإعلان مزاد؟' : 'Is this an auction?',
-                            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                                  fontWeight: FontWeight.w800,
-                                ),
+                            style: Theme.of(context).textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w800),
                           ),
                         ),
                         Switch(
@@ -828,20 +770,8 @@ class _FormCard extends StatelessWidget {
                 );
 
                 return wide
-                    ? Row(
-                        children: [
-                          typeField,
-                          const SizedBox(width: 10),
-                          auctionField,
-                        ],
-                      )
-                    : Column(
-                        children: [
-                          typeField,
-                          const SizedBox(height: 10),
-                          auctionField,
-                        ],
-                      );
+                    ? Row(children: [typeField, const SizedBox(width: 10), auctionField])
+                    : Column(children: [typeField, const SizedBox(height: 10), auctionField]);
               },
             ),
 
@@ -885,7 +815,7 @@ class _SubmitBar extends StatelessWidget {
       decoration: BoxDecoration(
         color: cs.surface,
         borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: cs.outlineVariant.withValues(alpha: 115)), // 0.45
+        border: Border.all(color: cs.outlineVariant.withValues(alpha: 115)),
       ),
       padding: const EdgeInsets.all(12),
       child: Row(
@@ -905,11 +835,7 @@ class _SubmitBar extends StatelessWidget {
           ElevatedButton.icon(
             onPressed: enabled ? onSubmit : null,
             icon: saving
-                ? const SizedBox(
-                    width: 18,
-                    height: 18,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  )
+                ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
                 : const Icon(Icons.publish_outlined),
             label: Text(isAr ? 'نشر الإعلان' : 'Publish'),
           ),
@@ -929,9 +855,9 @@ class _ErrorBox extends StatelessWidget {
     final cs = Theme.of(context).colorScheme;
     return Container(
       decoration: BoxDecoration(
-        color: cs.errorContainer.withValues(alpha: 140), // 0.55
+        color: cs.errorContainer.withValues(alpha: 140),
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: cs.error.withValues(alpha: 64)), // 0.25
+        border: Border.all(color: cs.error.withValues(alpha: 64)),
       ),
       padding: const EdgeInsets.all(12),
       child: Row(
@@ -1028,12 +954,7 @@ class _Dropdown extends StatelessWidget {
           value: value,
           isExpanded: true,
           items: items
-              .map(
-                (e) => DropdownMenuItem(
-                  value: e.value,
-                  child: Text(e.label),
-                ),
-              )
+              .map((e) => DropdownMenuItem(value: e.value, child: Text(e.label)))
               .toList(),
           onChanged: enabled ? (v) => v == null ? null : onChanged(v) : null,
         ),

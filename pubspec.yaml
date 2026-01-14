@@ -30,12 +30,17 @@ dependencies:
   supabase_flutter: ^2.12.0
 
   # =========================
+  # Env (SAFER for demo)
+  # =========================
+  flutter_dotenv: ^5.1.0
+
+  # =========================
   # File / Media
   # =========================
   file_picker: ^8.3.7
 
   # =========================
-  # Device info (مطلوب في login_screen.dart)
+  # Device info
   # =========================
   device_info_plus: ^10.1.0
 
@@ -44,9 +49,23 @@ dependencies:
   # =========================
   uuid: ^4.5.2
 
+  # =========================
+  # Google Maps (Coordinates A)
+  # =========================
+  google_maps_flutter: ^2.6.1
+
+  # Web support for Google Maps
+  google_maps_flutter_web: ^0.5.10
+
+  # =========================
+  # Sharing (Share A)
+  # =========================
+  share_plus: ^10.0.2
+
 dev_dependencies:
   flutter_test:
     sdk: flutter
+
   flutter_lints: ^6.0.0
 
 flutter:
@@ -54,5 +73,6 @@ flutter:
   uses-material-design: true
 
   assets:
+    - .env
     - assets/logo.png
     - assets/splashscreen.png

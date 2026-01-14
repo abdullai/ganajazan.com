@@ -9,6 +9,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:crypto/crypto.dart';
 import 'package:device_info_plus/device_info_plus.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'package:aqar_user/main.dart'; // themeModeNotifier + langNotifier
 import 'package:aqar_user/models.dart'; // AdItem
@@ -54,7 +55,7 @@ class _LoginScreenState extends State<LoginScreen>
   List<AdItem> _ads = [];
 
   // Remember-me masking
-  String? _storedUsername;
+  String? _storedUsername; // ✅ هنا نخزن "الهوية/الإقامة" الحقيقية 10 أرقام
   bool _maskedPrefillActive = false;
   bool _usernameEdited = false;
 
@@ -103,6 +104,15 @@ class _LoginScreenState extends State<LoginScreen>
   void initState() {
     super.initState();
 
+    // ✅ إذا فيه Session جاهز (تجربة سابقة) روح للداشبورد مباشرة
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      final uid = Supabase.instance.client.auth.currentUser?.id;
+      if (!mounted) return;
+      if (uid != null) {
+        Navigator.pushReplacementNamed(context, '/userDashboard');
+      }
+    });
+
     _pulseCtrl = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 950),
@@ -146,8 +156,6 @@ class _LoginScreenState extends State<LoginScreen>
       if (_usernameFocus.hasFocus && _maskedPrefillActive && !_usernameEdited) {
         _usernameEdited = true;
         _usernameController.clear();
-        _storedUsername = null;
-
         _resetDbFlags();
         setState(() {});
       }
@@ -175,13 +183,12 @@ class _LoginScreenState extends State<LoginScreen>
     _passwordMatches = false;
   }
 
-  bool _looksLikeUsername10Digits(String s) =>
-      RegExp(r'^\d{10}$').hasMatch(s);
+  bool _looksLikeUsername10Digits(String s) => RegExp(r'^\d{10}$').hasMatch(s);
 
   Future<void> _checkUsernameExistsDebounced() async {
     _userCheckDebounce?.cancel();
 
-    final u = (_getRealUsername() ?? _usernameController.text).trim();
+    final u = (_getRealUsername() ?? '').trim();
     if (!_looksLikeUsername10Digits(u)) {
       if (!mounted) return;
       setState(() {
@@ -208,7 +215,7 @@ class _LoginScreenState extends State<LoginScreen>
   Future<void> _checkCredentialsDebounced() async {
     _credCheckDebounce?.cancel();
 
-    final u = (_getRealUsername() ?? _usernameController.text).trim();
+    final u = (_getRealUsername() ?? '').trim();
     final p = _passwordController.text.trim();
 
     if (!_looksLikeUsername10Digits(u) || p.isEmpty) {
@@ -224,8 +231,8 @@ class _LoginScreenState extends State<LoginScreen>
       if (!mounted) return;
       setState(() => _checkingCreds = true);
 
-      final ok =
-          await AuthService.credentialsMatch(username: u, password: p);
+      // ✅ (واجهة فقط) إذا password النصي غير موجود في DB ممكن ترجع false دائماً
+      final ok = await AuthService.credentialsMatch(username: u, password: p);
 
       if (!mounted) return;
       setState(() {
@@ -266,8 +273,7 @@ class _LoginScreenState extends State<LoginScreen>
     try {
       _failedAttempts = Map<String, int>.from(json.decode(attemptsJson));
       final lockoutMap = Map<String, dynamic>.from(json.decode(lockoutJson));
-      _lockoutUntil =
-          lockoutMap.map((k, v) => MapEntry(k, DateTime.parse(v)));
+      _lockoutUntil = lockoutMap.map((k, v) => MapEntry(k, DateTime.parse(v)));
     } catch (_) {
       _failedAttempts = {};
       _lockoutUntil = {};
@@ -298,7 +304,8 @@ class _LoginScreenState extends State<LoginScreen>
     await prefs.setBool('fastLogin', fastLogin);
 
     await prefs.setString('failedAttempts', json.encode(_failedAttempts));
-    final lockoutJson = _lockoutUntil.map((k, v) => MapEntry(k, v.toIso8601String()));
+    final lockoutJson =
+        _lockoutUntil.map((k, v) => MapEntry(k, v.toIso8601String()));
     await prefs.setString('lockoutUntil', json.encode(lockoutJson));
 
     if (!rememberMe) {
@@ -307,10 +314,13 @@ class _LoginScreenState extends State<LoginScreen>
       return;
     }
 
-    final realUsername = _getRealUsername();
-    if ((realUsername ?? '').isNotEmpty) {
-      await prefs.setString('username', realUsername!.trim());
+    // ✅ احفظ الهوية/الإقامة الحقيقية (10 أرقام)
+    final real = (_getRealUsername() ?? '').trim();
+    if (_looksLikeUsername10Digits(real)) {
+      await prefs.setString('username', real);
+      _storedUsername = real;
     }
+
     if (prefs.containsKey('password')) await prefs.remove('password');
   }
 
@@ -354,8 +364,10 @@ class _LoginScreenState extends State<LoginScreen>
   }
 
   String? _getRealUsername() {
-    if (_storedUsername == null) return _usernameController.text.trim();
-    return _storedUsername?.trim();
+    if (_maskedPrefillActive && !_usernameEdited) {
+      return _storedUsername?.trim();
+    }
+    return _usernameController.text.trim();
   }
 
   String _normalizeNumbers(String input) => AuthService.normalizeNumbers(input);
@@ -417,8 +429,7 @@ class _LoginScreenState extends State<LoginScreen>
     _failedAttempts[username] = attempts;
 
     if (attempts >= 3) {
-      _lockoutUntil[username] =
-          DateTime.now().add(const Duration(minutes: 5));
+      _lockoutUntil[username] = DateTime.now().add(const Duration(minutes: 5));
       setState(() {
         showCaptcha = true;
         _generateCaptcha();
@@ -440,9 +451,7 @@ class _LoginScreenState extends State<LoginScreen>
 
     final logEntry = {
       'timestamp': now,
-      'username': username.length >= 3
-          ? (username.substring(0, 3) + '*****')
-          : '***',
+      'username': username.length >= 3 ? (username.substring(0, 3) + '*****') : '***',
       'success': success,
       'deviceId': deviceId,
       'ip': 'detected',
@@ -467,10 +476,10 @@ class _LoginScreenState extends State<LoginScreen>
   Future<void> _login() async {
     final t = AppLocalizations.of(context)!;
 
-    final username = _getRealUsername();
+    final username = (_getRealUsername() ?? '').trim();
     final password = _passwordController.text;
 
-    if ((username ?? '').isEmpty || password.isEmpty) {
+    if (username.isEmpty || password.isEmpty) {
       setState(() {
         loginError = true;
         loginErrorText = t.allFieldsRequired;
@@ -478,7 +487,7 @@ class _LoginScreenState extends State<LoginScreen>
       return;
     }
 
-    final u = username!.trim();
+    final u = _normalizeNumbers(username).trim();
     if (!_looksLikeUsername10Digits(u)) {
       setState(() {
         loginError = true;
@@ -495,8 +504,7 @@ class _LoginScreenState extends State<LoginScreen>
       if (userCaptchaInput.trim().toUpperCase() != captchaText) {
         setState(() {
           loginError = true;
-          loginErrorText =
-              _isAr ? 'رمز التحقق غير صحيح' : 'Incorrect CAPTCHA code';
+          loginErrorText = _isAr ? 'رمز التحقق غير صحيح' : 'Incorrect CAPTCHA code';
           _generateCaptcha();
         });
         await _updateFailedAttempts(u);
@@ -515,6 +523,7 @@ class _LoginScreenState extends State<LoginScreen>
     final lang = langNotifier.value == 'en' ? 'en' : 'ar';
     final deviceFingerprint = await _getDeviceFingerprint();
 
+    // ✅ هذا أهم سطر: AuthService.login الآن ينشئ Session حقيقي عبر signInWithPassword
     final result = await AuthService.login(
       username: u,
       password: password,
@@ -555,15 +564,40 @@ class _LoginScreenState extends State<LoginScreen>
       return;
     }
 
+    // ✅ تحقق: Session فعلاً صار موجود
+    final uid = Supabase.instance.client.auth.currentUser?.id;
+    if (uid == null) {
+      setState(() {
+        loginError = true;
+        loginErrorText = _isAr
+            ? 'تم التحقق لكن لم يتم إنشاء جلسة دخول (Session). تأكد أن المستخدم موجود في Supabase Auth وكلمة المرور مطابقة.'
+            : 'Verified but no session created. Ensure user exists in Supabase Auth and password matches.';
+      });
+      return;
+    }
+
     await _resetFailedAttempts(u);
+
+    if (rememberMe) {
+      _storedUsername = u;
+      await _savePreferences();
+    }
+
     TextInput.finishAutofillContext(shouldSave: true);
-    await _savePreferences();
     await _logLoginAttempt(u, true, deviceFingerprint);
+
+    // ✅ إذا تبغى تتجاوز صفحة verify عندك في الويب/التطوير:
+    // انت الآن تقدر لأن الجلسة موجودة
+    if (!mounted) return;
+
+    if (fastLogin) {
+      Navigator.pushReplacementNamed(context, '/userDashboard');
+      return;
+    }
 
     final next = '/userDashboard';
     final code = _generateDemoCode();
 
-    if (!mounted) return;
     Navigator.pushReplacementNamed(
       context,
       '/verify',
@@ -593,10 +627,7 @@ class _LoginScreenState extends State<LoginScreen>
                   final w = c.maxWidth;
                   final h = c.maxHeight;
 
-                  // ✅ عند قصر الارتفاع: نسمح بالتمرير (بدون Scrollbar بسبب scrollBehavior في MaterialApp)
                   final allowVerticalScroll = h < 760;
-
-                  // ✅ على الويب/شاشات كبيرة: اظهار لوحة الاعلانات جانبياً
                   final showAdsSide = w >= 980;
 
                   if (showAdsSide) {
@@ -611,7 +642,7 @@ class _LoginScreenState extends State<LoginScreen>
                             child: Padding(
                               padding: const EdgeInsets.all(22),
                               child: _loginCard(
-                                maxWidth: 600, // ✅ أكبر قليلاً
+                                maxWidth: 600,
                                 borderRadius: 20,
                                 t: t,
                                 allowVerticalScroll: allowVerticalScroll,
@@ -680,8 +711,6 @@ class _LoginScreenState extends State<LoginScreen>
           ],
         ),
         const SizedBox(height: 12),
-
-        // ✅ شعار أكبر + أوضح (مطلوب)
         ScaleTransition(
           scale: _pulse,
           child: Image.asset(
@@ -695,8 +724,6 @@ class _LoginScreenState extends State<LoginScreen>
           ),
         ),
         const SizedBox(height: 12),
-
-        // ✅ خطوط أغمق
         Text(
           t.welcomeTrustedAqar,
           textAlign: TextAlign.center,
@@ -718,7 +745,6 @@ class _LoginScreenState extends State<LoginScreen>
           textAlign: TextAlign.center,
         ),
         const SizedBox(height: 18),
-
         AutofillGroup(
           child: Column(
             children: [
@@ -728,14 +754,11 @@ class _LoginScreenState extends State<LoginScreen>
             ],
           ),
         ),
-
         if (showCaptcha) ...[
           const SizedBox(height: 16),
           _buildCaptchaSection(t: t),
         ],
-
         const SizedBox(height: 10),
-
         Row(
           children: [
             Checkbox(
@@ -754,8 +777,7 @@ class _LoginScreenState extends State<LoginScreen>
                   return;
                 }
 
-                final curU =
-                    _getRealUsername() ?? _usernameController.text.trim();
+                final curU = (_getRealUsername() ?? '').trim();
                 _storedUsername = curU.isEmpty ? null : curU;
 
                 if ((_storedUsername ?? '').isNotEmpty) {
@@ -793,18 +815,16 @@ class _LoginScreenState extends State<LoginScreen>
             ),
           ],
         ),
-
         Align(
           alignment: AlignmentDirectional.centerStart,
           child: TextButton(
-            onPressed: () => Navigator.pushNamed(context, '/forgot'),
+            onPressed: () => Navigator.pushNamed(context, '/resetPassword'),
             child: Text(
               t.forgotUsernameOrPassword,
               style: const TextStyle(fontWeight: FontWeight.w900),
             ),
           ),
         ),
-
         AnimatedSwitcher(
           duration: const Duration(milliseconds: 180),
           child: loginError
@@ -840,7 +860,6 @@ class _LoginScreenState extends State<LoginScreen>
                 )
               : const SizedBox.shrink(key: ValueKey('noerr')),
         ),
-
         SizedBox(
           width: double.infinity,
           height: 52,
@@ -849,8 +868,7 @@ class _LoginScreenState extends State<LoginScreen>
               backgroundColor: _bankColor,
               foregroundColor: Colors.white,
               elevation: 3,
-              shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(12)),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
             ),
             onPressed: isBusy ? null : _login,
             child: AnimatedSwitcher(
@@ -875,13 +893,11 @@ class _LoginScreenState extends State<LoginScreen>
                   : Text(
                       t.userSignIn,
                       key: const ValueKey('text'),
-                      style: const TextStyle(
-                          fontSize: 16, fontWeight: FontWeight.w900),
+                      style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w900),
                     ),
             ),
           ),
         ),
-
         const SizedBox(height: 8),
         TextButton(
           onPressed: () {
@@ -920,8 +936,7 @@ class _LoginScreenState extends State<LoginScreen>
       child: Card(
         elevation: 10,
         shadowColor: Colors.black.withOpacity(0.18),
-        shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(borderRadius)),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(borderRadius)),
         color: cardColor,
         child: child,
       ),
@@ -997,17 +1012,17 @@ class _LoginScreenState extends State<LoginScreen>
           foregroundColor: fg,
           elevation: selected ? 2 : 0,
           padding: const EdgeInsetsDirectional.fromSTEB(14, 0, 14, 0),
-          shape:
-              RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
         ),
         onPressed: () => _setLanguage(code),
-        child: Text(title,
-            style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 13)),
+        child: Text(
+          title,
+          style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 13),
+        ),
       ),
     );
   }
 
-  // ✅ username suffix: ✅ فقط إذا موجود في DB
   Widget _buildUsernameField({required AppLocalizations t}) {
     final raw = _usernameController.text.trim();
     final normalized = _normalizeNumbers(raw).trim();
@@ -1020,7 +1035,10 @@ class _LoginScreenState extends State<LoginScreen>
         height: 44,
         child: Center(
           child: SizedBox(
-              width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2)),
+            width: 18,
+            height: 18,
+            child: CircularProgressIndicator(strokeWidth: 2),
+          ),
         ),
       );
     } else if (_usernameExists) {
@@ -1053,9 +1071,7 @@ class _LoginScreenState extends State<LoginScreen>
       autofillHints: const [AutofillHints.username],
       style: TextStyle(color: _textPrimary, fontWeight: FontWeight.w900),
       decoration: InputDecoration(
-        hintText: _isAr
-            ? 'رقم الهوية/الإقامة (10 أرقام)'
-            : 'Saudi ID/Iqama (10 digits)',
+        hintText: _isAr ? 'رقم الهوية/الإقامة (10 أرقام)' : 'Saudi ID/Iqama (10 digits)',
         hintStyle: TextStyle(color: _hintColor, fontWeight: FontWeight.w800),
         counterText: '',
         prefixIcon: Icon(Icons.badge_outlined, color: _iconColor),
@@ -1076,7 +1092,6 @@ class _LoginScreenState extends State<LoginScreen>
         if (_maskedPrefillActive && !_usernameEdited) {
           _usernameEdited = true;
           _usernameController.clear();
-          _storedUsername = null;
           _resetDbFlags();
           setState(() {});
         }
@@ -1090,7 +1105,10 @@ class _LoginScreenState extends State<LoginScreen>
 
     final statusWidget = _checkingCreds
         ? const SizedBox(
-            width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
+            width: 18,
+            height: 18,
+            child: CircularProgressIndicator(strokeWidth: 2),
+          )
         : (valid
             ? Icon(Icons.verified_rounded, color: _successColor)
             : (showErrorIcon
@@ -1125,16 +1143,10 @@ class _LoginScreenState extends State<LoginScreen>
                     color: _iconColor,
                   ),
                   onPressed: () => setState(() => obscurePassword = !obscurePassword),
-                  tooltip: obscurePassword
-                      ? (_isAr ? 'إظهار' : 'Show')
-                      : (_isAr ? 'إخفاء' : 'Hide'),
+                  tooltip: obscurePassword ? (_isAr ? 'إظهار' : 'Show') : (_isAr ? 'إخفاء' : 'Hide'),
                 ),
               ),
-              SizedBox(
-                width: 44,
-                height: 44,
-                child: Center(child: statusWidget),
-              ),
+              SizedBox(width: 44, height: 44, child: Center(child: statusWidget)),
             ],
           ),
         ),
@@ -1160,7 +1172,8 @@ class _LoginScreenState extends State<LoginScreen>
         color: _isLight ? const Color(0xFFFEF3C7) : const Color(0xFF78350F),
         borderRadius: BorderRadius.circular(12),
         border: Border.all(
-            color: _isLight ? const Color(0xFFF59E0B) : const Color(0xFFD97706)),
+          color: _isLight ? const Color(0xFFF59E0B) : const Color(0xFFD97706),
+        ),
       ),
       child: Column(
         children: [
@@ -1308,9 +1321,7 @@ class _LoginScreenState extends State<LoginScreen>
                             style: TextStyle(
                               fontSize: 32,
                               fontWeight: FontWeight.w900,
-                              color: _isLight
-                                  ? const Color(0xFF0B1220)
-                                  : Colors.white,
+                              color: _isLight ? const Color(0xFF0B1220) : Colors.white,
                               height: 1.15,
                             ),
                           ),
@@ -1322,9 +1333,7 @@ class _LoginScreenState extends State<LoginScreen>
                               fontSize: 14.5,
                               fontWeight: FontWeight.w800,
                               height: 1.6,
-                              color: _isLight
-                                  ? const Color(0xFF4A5568)
-                                  : const Color(0xFFCBD5E1),
+                              color: _isLight ? const Color(0xFF4A5568) : const Color(0xFFCBD5E1),
                             ),
                           ),
                           const SizedBox(height: 16),
@@ -1396,9 +1405,7 @@ class _LoginScreenState extends State<LoginScreen>
             borderRadius: BorderRadius.circular(99),
             color: active
                 ? _bankColor
-                : (_isLight
-                    ? const Color(0xFFBFD0FF)
-                    : const Color(0xFF2B3A6B)),
+                : (_isLight ? const Color(0xFFBFD0FF) : const Color(0xFF2B3A6B)),
           ),
         );
       }),

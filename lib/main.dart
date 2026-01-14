@@ -1,4 +1,6 @@
 ﻿// lib/main.dart
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -11,6 +13,7 @@ import 'screens/login_screen.dart';
 import 'screens/user_dashboard.dart';
 import 'screens/verify_screen.dart';
 import 'screens/settings_page.dart';
+import 'screens/reset_password_screen.dart';
 import 'theme.dart';
 
 final ValueNotifier<ThemeMode> themeModeNotifier =
@@ -76,7 +79,7 @@ class AqarUserApp extends StatelessWidget {
                   darkTheme: AppTheme.darkTheme,
                   themeMode: mode,
 
-                  // ✅ تثبيت اتجاه الواجهة حسب اللغة (اختياري لكن مفيد)
+                  // ✅ تثبيت اتجاه الواجهة حسب اللغة
                   builder: (context, child) {
                     return Directionality(
                       textDirection:
@@ -84,6 +87,9 @@ class AqarUserApp extends StatelessWidget {
                       child: child ?? const SizedBox.shrink(),
                     );
                   },
+
+                  // ✅ إن وصل رابط recovery من Supabase (reset password) سيتم فتح الصفحة تلقائياً
+                  initialRoute: _initialRouteForRecovery(),
 
                   routes: {
                     '/': (context) => isLoggedIn
@@ -101,6 +107,9 @@ class AqarUserApp extends StatelessWidget {
                         ),
 
                     '/settings': (context) => SettingsPage(lang: lang),
+
+                    // ✅ Reset Password Screen
+                    '/resetPassword': (context) => const ResetPasswordScreen(),
                   },
                 );
               },
@@ -109,5 +118,28 @@ class AqarUserApp extends StatelessWidget {
         );
       },
     );
+  }
+
+  /// يقرأ رابط الويب الحالي:
+  /// http://127.0.0.1:8000/#access_token=...&type=recovery
+  /// لو type=recovery نفتح صفحة تغيير كلمة المرور مباشرة.
+  String _initialRouteForRecovery() {
+    try {
+      final uri = Uri.base;
+
+      // Supabase يضع القيم داخل الـ fragment بعد #
+      final frag = uri.fragment; // access_token=...&type=recovery...
+      if (frag.isEmpty) return '/';
+
+      final params = Uri.splitQueryString(frag);
+      final type = (params['type'] ?? '').toLowerCase();
+
+      if (type == 'recovery') {
+        return '/resetPassword';
+      }
+      return '/';
+    } catch (_) {
+      return '/';
+    }
   }
 }

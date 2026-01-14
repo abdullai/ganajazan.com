@@ -1,4 +1,5 @@
-﻿import 'dart:async';
+﻿// lib/screens/verify_screen.dart
+import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
@@ -23,8 +24,7 @@ class _VerifyScreenState extends State<VerifyScreen> {
 
   final List<TextEditingController> _controllers =
       List.generate(_otpLen, (_) => TextEditingController());
-  final List<FocusNode> _focusNodes =
-      List.generate(_otpLen, (_) => FocusNode());
+  final List<FocusNode> _focusNodes = List.generate(_otpLen, (_) => FocusNode());
 
   Timer? _timer;
   int _secondsLeft = _maxSeconds;
@@ -35,12 +35,15 @@ class _VerifyScreenState extends State<VerifyScreen> {
 
   // Dev OTP
   String _expectedCode = '';
+
+  // ✅ navigation
   String _nextRoute = '/login';
+  Map<String, dynamic> _nextArgs = <String, dynamic>{};
 
   // info
   String _fullName = '';
   DateTime? _lastLogin;
-  String _username = '';
+  String _username = ''; // ✅ رقم الهوية/الإقامة
   String _deviceId = '';
 
   bool _argsRead = false;
@@ -95,9 +98,13 @@ class _VerifyScreenState extends State<VerifyScreen> {
 
       _nextRoute = (args['next'] as String?) ?? '/login';
 
+      // ✅ اختياري: تمرير args جاهزة للشاشة التالية (مثل userId/lang)
+      final na = args['nextArgs'];
+      _nextArgs = (na is Map) ? Map<String, dynamic>.from(na) : <String, dynamic>{};
+
       _fullName = (args['fullName'] as String?) ?? '';
       _lastLogin = args['lastLogin'] as DateTime?;
-      _username = (args['username'] as String?) ?? '';
+      _username = (args['username'] as String?) ?? ''; // ✅ رقم الهوية/الإقامة
       _deviceId = (args['deviceId'] as String?) ?? '';
     });
   }
@@ -146,12 +153,10 @@ class _VerifyScreenState extends State<VerifyScreen> {
     _timer?.cancel();
     if (!mounted) return;
 
-    // الأفضل: إزالة الستاك بالكامل ثم فتح login
     try {
       Navigator.of(context).pushNamedAndRemoveUntil('/login', (r) => false);
       return;
     } catch (_) {
-      // لو /login غير مُعرّف عندك، نرجّع لأول Route موجود
       Navigator.popUntil(context, (route) => route.isFirst);
     }
   }
@@ -178,7 +183,17 @@ class _VerifyScreenState extends State<VerifyScreen> {
 
     _timer?.cancel();
     ScaffoldMessenger.of(context).hideCurrentSnackBar();
-    Navigator.pushReplacementNamed(context, _nextRoute);
+
+    // ✅ أهم تعديل: تمرير username (رقم الهوية/الإقامة) للشاشة التالية
+    final args = <String, dynamic>{
+      ..._nextArgs,
+      'username': _username,
+      'deviceId': _deviceId,
+      'fullName': _fullName,
+      'lastLogin': _lastLogin,
+    };
+
+    Navigator.pushReplacementNamed(context, _nextRoute, arguments: args);
   }
 
   // ✅ لصق صحيح: يمسح القديم ثم يعبّي 0..3 دائماً
@@ -219,13 +234,11 @@ class _VerifyScreenState extends State<VerifyScreen> {
 
     final digitsOnly = value.replaceAll(RegExp(r'\D'), '');
 
-    // ✅ إذا لصق أكثر من رقم داخل خانة واحدة
     if (digitsOnly.length >= 2) {
       _applyPastedDigits(digitsOnly);
       return;
     }
 
-    // ✅ حذف: لو صارت الخانة فاضية، رجّع للمربع السابق
     if (digitsOnly.isEmpty) {
       if (index > 0) {
         _focusNodes[index - 1].requestFocus();
@@ -236,7 +249,6 @@ class _VerifyScreenState extends State<VerifyScreen> {
       return;
     }
 
-    // ✅ تأكيد أن الخانة تحتوي رقم واحد فقط (بدون بقايا قيمة سابقة)
     if (_controllers[index].text != digitsOnly) {
       _controllers[index].text = digitsOnly;
       _controllers[index].selection = const TextSelection.collapsed(offset: 1);
@@ -250,7 +262,6 @@ class _VerifyScreenState extends State<VerifyScreen> {
     }
   }
 
-  // ✅ Backspace على الويب/الديسكتوب (KeyDownEvent)
   void _onOtpBackspace({required int index, required KeyEvent event}) {
     if (event is! KeyDownEvent) return;
     if (event.logicalKey != LogicalKeyboardKey.backspace) return;
@@ -309,7 +320,7 @@ class _VerifyScreenState extends State<VerifyScreen> {
         child: TextField(
           controller: _controllers[index],
           textAlign: TextAlign.center,
-          textDirection: TextDirection.ltr, // ✅ للأرقام دائماً LTR
+          textDirection: TextDirection.ltr,
           keyboardType: TextInputType.number,
           maxLength: 1,
           inputFormatters: [
@@ -457,14 +468,23 @@ class _VerifyScreenState extends State<VerifyScreen> {
                                               color: subColor,
                                             ),
                                           ),
+                                        if (_username.isNotEmpty)
+                                          Text(
+                                            _isAr
+                                                ? 'المستخدم: $_username'
+                                                : 'User: $_username',
+                                            style: TextStyle(
+                                              fontWeight: FontWeight.w800,
+                                              color: subColor,
+                                              fontSize: 12.5,
+                                            ),
+                                          ),
                                       ],
                                     ),
                                   ),
                                 ],
                               ),
-
                               const SizedBox(height: 10),
-
                               Row(
                                 children: [
                                   Icon(Icons.schedule_rounded,
@@ -501,7 +521,6 @@ class _VerifyScreenState extends State<VerifyScreen> {
                                   ),
                                 ],
                               ),
-
                               const SizedBox(height: 12),
 
                               // DEV OTP
@@ -545,8 +564,7 @@ class _VerifyScreenState extends State<VerifyScreen> {
                                             behavior: SnackBarBehavior.floating,
                                             content: Text(
                                                 _isAr ? 'تم نسخ الرمز' : 'Copied'),
-                                            duration:
-                                                const Duration(milliseconds: 900),
+                                            duration: const Duration(milliseconds: 900),
                                           ),
                                         );
                                       },
@@ -631,7 +649,6 @@ class _VerifyScreenState extends State<VerifyScreen> {
 
                               const SizedBox(height: 10),
 
-                              // ✅ أهم تعديل: إجبار صف الـ OTP يكون LTR (عرضاً وترتيباً)
                               Directionality(
                                 textDirection: TextDirection.ltr,
                                 child: Row(

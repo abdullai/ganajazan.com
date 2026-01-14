@@ -37,9 +37,11 @@ class AuthService {
     return out;
   }
 
+  /// ✅ 10 أرقام وتبدأ بـ 1 أو 2 (هوية/إقامة)
   static bool _isValidSaudiIdLikeUsername(String v) {
     final s = normalizeNumbers(v.trim());
     if (s.length != 10) return false;
+    if (!(s.startsWith('1') || s.startsWith('2'))) return false;
     for (int i = 0; i < s.length; i++) {
       final c = s.codeUnitAt(i);
       if (c < 48 || c > 57) return false;
@@ -94,15 +96,19 @@ class AuthService {
     if (!_isValidSaudiIdLikeUsername(u)) return false;
 
     try {
-      final row = await _sb.from('app_users').select('username').eq('username', u).maybeSingle();
+      final row = await _sb
+          .from('app_users')
+          .select('username')
+          .eq('username', u)
+          .maybeSingle();
       return row != null;
     } catch (_) {
       return false;
     }
   }
 
-  // ⚠️ هذا يعتمد على أن كلمة المرور مخزنة كنص (كما في جدولك حالياً).
-  // لاحقاً الأفضل Hash.
+  /// ⚠️ واجهة فقط (✅) — يعتمد على password النصي (إن كان موجوداً).
+  /// لو جدولك الآن يعتمد password_hash فقط، سيُرجع false دائماً.
   static Future<bool> credentialsMatch({
     required String username,
     required String password,
@@ -113,7 +119,12 @@ class AuthService {
     if (pIn.isEmpty) return false;
 
     try {
-      final row = await _sb.from('app_users').select('password').eq('username', u).maybeSingle();
+      final row = await _sb
+          .from('app_users')
+          .select('password')
+          .eq('username', u)
+          .maybeSingle();
+
       if (row == null) return false;
 
       final dbPassRaw = (row['password'] ?? '').toString();
@@ -125,14 +136,18 @@ class AuthService {
   }
 
   // =========================
-  // Login
+  // ✅ NEW: Login via national id -> RPC -> Supabase Auth sign-in (Session)
   // =========================
+
+  /// ✅ يعمل بهذا التسلسل:
+  /// 1) RPC: login_with_national_id(p_national_id, p_password) => يرجع email + ok/message
+  /// 2) signInWithPassword(email, password) => ينشئ Session حقيقي (auth.uid()!=null)
   static Future<LoginResult> login({
     required String username,
     required String password,
     String lang = 'ar',
   }) async {
-    final isAr = lang == 'ar';
+    final isAr = lang != 'en';
 
     final uName = normalizeNumbers(username).trim();
     final passIn = normalizeNumbers(password).trim();
@@ -142,8 +157,8 @@ class AuthService {
         ok: false,
         locked: false,
         message: isAr
-            ? 'اسم المستخدم يجب أن يكون رقم الهوية/الإقامة (10 أرقام فقط).'
-            : 'Username must be a 10-digit National ID / Iqama number.',
+            ? 'اسم المستخدم يجب أن يكون رقم الهوية/الإقامة (10 أرقام ويبدأ بـ 1 أو 2).'
+            : 'Username must be a 10-digit National ID / Iqama (starting with 1 or 2).',
       );
     }
 
@@ -156,102 +171,71 @@ class AuthService {
     }
 
     try {
-      final row = await _sb
+      // 1) RPC
+      final rpc = await _sb.rpc('login_with_national_id', params: {
+        // ✅ الأسماء MUST تطابق تعريف الدالة عندك
+        'p_national_id': uName,
+        'p_password': passIn,
+      });
+
+      final Map<String, dynamic> row = (rpc is List && rpc.isNotEmpty)
+          ? Map<String, dynamic>.from(rpc.first as Map)
+          : <String, dynamic>{};
+
+      final ok = row['ok'] == true;
+      final msg = (row['message'] ?? '').toString();
+      final email = (row['email'] ?? '').toString().trim();
+
+      if (!ok) {
+        final locked = msg == 'LOCKED';
+        await _audit(
+          action: 'login',
+          username: uName,
+          email: email.isEmpty ? null : email,
+          success: false,
+          message: msg.isEmpty ? 'rpc_login_failed' : msg,
+        );
+
+        return LoginResult(
+          ok: false,
+          locked: locked,
+          message: locked
+              ? (isAr
+                  ? 'الحساب مؤقتاً مقفل بسبب كثرة المحاولات. حاول لاحقاً.'
+                  : 'Temporarily locked due to too many attempts. Try later.')
+              : (isAr ? 'بيانات الدخول غير صحيحة.' : 'Invalid credentials.'),
+        );
+      }
+
+      if (email.isEmpty) {
+        await _audit(
+          action: 'login',
+          username: uName,
+          success: false,
+          message: 'no_email_returned',
+          details: 'RPC returned ok=true but email is empty',
+        );
+        return LoginResult(
+          ok: false,
+          locked: false,
+          message: isAr ? 'تعذر إكمال تسجيل الدخول.' : 'Unable to complete login.',
+        );
+      }
+
+      // 2) ✅ Session حقيقي
+      await _sb.auth.signInWithPassword(email: email, password: passIn);
+
+      // 3) (اختياري) جلب app_user
+      final appRow = await _sb
           .from('app_users')
-          .select('username,email,password,recovery_code,role,failed_attempts,locked')
+          .select('username,email,password,recovery_code,role')
           .eq('username', uName)
           .maybeSingle();
-
-      if (row == null) {
-        await _audit(
-          action: 'login',
-          username: uName,
-          success: false,
-          message: 'user_not_found',
-        );
-        return LoginResult(
-          ok: false,
-          locked: false,
-          message: isAr ? 'الحساب غير موجود.' : 'Account not found.',
-        );
-      }
-
-      final isLocked = (row['locked'] ?? false) as bool;
-      final failedAttempts = (row['failed_attempts'] ?? 0) as int;
-
-      if (isLocked) {
-        await _audit(
-          action: 'login',
-          username: uName,
-          email: (row['email'] ?? '').toString(),
-          success: false,
-          message: 'account_locked',
-        );
-        return LoginResult(
-          ok: false,
-          locked: true,
-          message: isAr
-              ? 'الحساب مقفل. افتحه عبر "نسيت اسم المستخدم/كلمة المرور".'
-              : 'Account is locked. Unlock via "Forgot username/password".',
-        );
-      }
-
-      final dbPassRaw = (row['password'] ?? '').toString();
-      final dbPass = normalizeNumbers(dbPassRaw).trim();
-      final passOk = dbPass == passIn;
-
-      if (!passOk) {
-        final newFailed = failedAttempts + 1;
-        final remaining = _maxAttempts - newFailed;
-        final willLock = newFailed >= _maxAttempts;
-
-        await _sb.from('app_users').update({
-          'failed_attempts': newFailed,
-          'locked': willLock,
-          'updated_at': DateTime.now().toUtc().toIso8601String(),
-        }).eq('username', uName);
-
-        await _audit(
-          action: 'login',
-          username: uName,
-          email: (row['email'] ?? '').toString(),
-          success: false,
-          message: willLock ? 'locked_after_max_attempts' : 'invalid_password',
-          details: 'failed_attempts=$newFailed',
-        );
-
-        if (willLock) {
-          return LoginResult(
-            ok: false,
-            locked: true,
-            message: isAr
-                ? 'تم قفل الحساب بعد $_maxAttempts محاولات خاطئة. استخدم "نسيت اسم المستخدم/كلمة المرور".'
-                : 'Account locked after $_maxAttempts failed attempts. Use "Forgot username/password".',
-          );
-        }
-
-        return LoginResult(
-          ok: false,
-          locked: false,
-          message: isAr
-              ? 'بيانات الدخول غير صحيحة. المتبقي $remaining محاولات.'
-              : 'Invalid credentials. $remaining attempts remaining.',
-        );
-      }
-
-      await _sb.from('app_users').update({
-        'failed_attempts': 0,
-        'locked': false,
-        'last_login_at': DateTime.now().toUtc().toIso8601String(),
-        'updated_at': DateTime.now().toUtc().toIso8601String(),
-      }).eq('username', uName);
-
-      final user = _userFromDb(row);
 
       await _audit(
         action: 'login',
         username: uName,
-        email: user.email,
+        email: email,
         success: true,
         message: 'ok',
       );
@@ -260,7 +244,20 @@ class AuthService {
         ok: true,
         locked: false,
         message: '',
-        user: user,
+        user: appRow == null ? null : _userFromDb(Map<String, dynamic>.from(appRow)),
+      );
+    } on AuthException catch (e) {
+      await _audit(
+        action: 'login',
+        username: uName,
+        success: false,
+        message: 'auth_exception',
+        details: e.message,
+      );
+      return LoginResult(
+        ok: false,
+        locked: false,
+        message: e.message,
       );
     } catch (e) {
       await _audit(
@@ -279,7 +276,7 @@ class AuthService {
   }
 
   // =========================
-  // Verify + Reset Password
+  // Verify + Reset Password (كما هو عندك)
   // =========================
   static Future<LoginResult> verifyAndReset({
     String? username,
@@ -288,7 +285,7 @@ class AuthService {
     required String newPassword,
     String lang = 'ar',
   }) async {
-    final isAr = lang == 'ar';
+    final isAr = lang != 'en';
     final uName = normalizeNumbers((username ?? '')).trim();
     final em = (email ?? '').trim();
 
@@ -324,7 +321,8 @@ class AuthService {
         );
       }
 
-      final dbRecovery = normalizeNumbers((row['recovery_code'] ?? '').toString()).trim();
+      final dbRecovery =
+          normalizeNumbers((row['recovery_code'] ?? '').toString()).trim();
       final rcIn = normalizeNumbers(recoveryCode).trim();
 
       if (dbRecovery != rcIn) {
@@ -366,8 +364,10 @@ class AuthService {
       return LoginResult(
         ok: true,
         locked: false,
-        message: isAr ? 'تم تحديث كلمة المرور وفتح الحساب.' : 'Password updated and account unlocked.',
-        user: updated == null ? null : _userFromDb(updated),
+        message: isAr
+            ? 'تم تحديث كلمة المرور وفتح الحساب.'
+            : 'Password updated and account unlocked.',
+        user: updated == null ? null : _userFromDb(Map<String, dynamic>.from(updated)),
       );
     } catch (e) {
       await _audit(
@@ -381,7 +381,9 @@ class AuthService {
       return LoginResult(
         ok: false,
         locked: false,
-        message: isAr ? 'حدث خطأ أثناء إعادة تعيين كلمة المرور.' : 'An error occurred while resetting the password.',
+        message: isAr
+            ? 'حدث خطأ أثناء إعادة تعيين كلمة المرور.'
+            : 'An error occurred while resetting the password.',
       );
     }
   }
@@ -429,7 +431,7 @@ class AuthService {
     await _sb.from('app_users').upsert({
       'username': uName,
       'email': email.trim().toLowerCase(),
-      'password': password,
+      'password': password, // إذا انتقلت للهاش لاحقاً، لا تخزن نص
       'recovery_code': recoveryCode,
       'role': _roleToDb(role),
       'failed_attempts': 0,

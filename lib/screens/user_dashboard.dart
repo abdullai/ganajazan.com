@@ -1,19 +1,21 @@
 ﻿// lib/screens/user_dashboard.dart
 import 'dart:async';
+import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
-import '../main.dart'; // langNotifier + themeModeNotifier (إن وُجد)
+import '../main.dart'; // langNotifier
 import '../models/property.dart';
-import 'add_property_page.dart';
+import 'add_property_page.dart' as addp;
 import 'chat_page.dart';
+import 'property_details_page.dart' as details;
 import 'settings_page.dart';
-import 'package:flutter/foundation.dart';
-
 
 class UserDashboard extends StatefulWidget {
-  final String lang;
+  final String lang; // يُمرر من login/verify أو من main
   const UserDashboard({super.key, required this.lang});
 
   @override
@@ -22,7 +24,6 @@ class UserDashboard extends StatefulWidget {
 
 class _UserDashboardState extends State<UserDashboard> {
   static const Color _bankColor = Color(0xFF0F766E);
-
   final _sb = Supabase.instance.client;
 
   // Tabs: 0 Home, 1 My Ads, 2 Offers, 3 Support, 4 Settings
@@ -50,15 +51,25 @@ class _UserDashboardState extends State<UserDashboard> {
   List<Map<String, dynamic>> _offers = const [];
   Map<String, Property> _myPropertyById = {};
 
+  // ✅ Favorites (persisted per Supabase uid)
+  final Set<String> _favoriteIds = <String>{};
+  bool _favoritesLoaded = false;
+
   String get _lang => langNotifier.value;
   bool get _isAr => _lang == 'ar';
   String get _uid => _sb.auth.currentUser?.id ?? '';
+
+  // ✅ رقم الهوية/الإقامة (يأتي من VerifyScreen عبر arguments)
+  String _usernameNationalId = '';
 
   bool _loggingOut = false;
 
   @override
   void initState() {
     super.initState();
+    if (widget.lang.isNotEmpty && widget.lang != _lang) {
+      langNotifier.value = widget.lang;
+    }
     _reloadAll();
   }
 
@@ -66,6 +77,66 @@ class _UserDashboardState extends State<UserDashboard> {
   void dispose() {
     _debounce?.cancel();
     super.dispose();
+  }
+
+  // =========================
+  // Favorites persistence
+  // =========================
+
+  String _favKey(String uid) => 'fav_ids_$uid';
+
+  Future<void> _loadFavoritesForUid() async {
+    final uid = _uid;
+    if (uid.isEmpty) {
+      _favoriteIds.clear();
+      _favoritesLoaded = true;
+      return;
+    }
+
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(_favKey(uid));
+    _favoriteIds.clear();
+
+    if (raw != null) {
+      try {
+        final list = (jsonDecode(raw) as List).map((e) => e.toString()).toSet();
+        _favoriteIds.addAll(list);
+      } catch (_) {}
+    }
+
+    _favoritesLoaded = true;
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _saveFavoritesForUid() async {
+    final uid = _uid;
+    if (uid.isEmpty) return;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_favKey(uid), jsonEncode(_favoriteIds.toList()));
+  }
+
+  bool _isFav(String id) => _favoriteIds.contains(id);
+
+  Future<void> _toggleFav(String propertyId) async {
+    if (_uid.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          behavior: SnackBarBehavior.floating,
+          content: Text(_isAr ? 'سجّل الدخول لاستخدام المفضلة' : 'Login to use favorites'),
+        ),
+      );
+      return;
+    }
+
+    setState(() {
+      if (_favoriteIds.contains(propertyId)) {
+        _favoriteIds.remove(propertyId);
+      } else {
+        _favoriteIds.add(propertyId);
+      }
+    });
+
+    await _saveFavoritesForUid();
   }
 
   // =========================
@@ -77,6 +148,33 @@ class _UserDashboardState extends State<UserDashboard> {
       _loadHome(),
       _loadMineAndOffers(),
     ]);
+
+    if (!_favoritesLoaded) {
+      await _loadFavoritesForUid();
+    }
+  }
+
+  Future<Map<String, String>> _fetchUsernamesByUserIds(List<String> userIds) async {
+    if (userIds.isEmpty) return {};
+    try {
+      final data = await _sb
+          .from('users_profiles')
+          .select('user_id, username')
+          .inFilter('user_id', userIds);
+
+      final rows = (data as List).cast<Map>();
+      final map = <String, String>{};
+      for (final r in rows) {
+        final uid = (r['user_id'] ?? '').toString();
+        final u = (r['username'] ?? '').toString().trim();
+        if (uid.isNotEmpty && u.isNotEmpty) {
+          map[uid] = u;
+        }
+      }
+      return map;
+    } catch (_) {
+      return {};
+    }
   }
 
   Future<void> _loadHome() async {
@@ -92,9 +190,9 @@ class _UserDashboardState extends State<UserDashboard> {
             '''
             id,
             owner_id,
+            username,
             title,
             description,
-            location,
             city,
             type,
             area,
@@ -104,6 +202,8 @@ class _UserDashboardState extends State<UserDashboard> {
             views,
             status,
             created_at,
+            latitude,
+            longitude,
             property_images:property_images (
               path,
               sort_order
@@ -118,6 +218,9 @@ class _UserDashboardState extends State<UserDashboard> {
         final s = (r['status'] as String?) ?? 'active';
         return s == 'active';
       }).toList();
+
+      final ownerIds = activeRows.map((r) => (r['owner_id'] ?? '').toString()).where((s) => s.isNotEmpty).toSet().toList();
+      final usernameMap = await _fetchUsernamesByUserIds(ownerIds);
 
       final list = activeRows.map((row) {
         final imagesRaw = (row['property_images'] as List?) ?? const [];
@@ -134,7 +237,14 @@ class _UserDashboardState extends State<UserDashboard> {
             .map((p) => _sb.storage.from('property-images').getPublicUrl(p))
             .toList();
 
-        return _propertyFromDb(row, imageUrls: imageUrls);
+        final ownerId = (row['owner_id'] ?? '').toString();
+        final ownerUsername = (usernameMap[ownerId]?.trim().isNotEmpty ?? false)
+            ? usernameMap[ownerId]!.trim()
+            : ((row['username'] as String?)?.trim().isNotEmpty ?? false)
+                ? (row['username'] as String).trim()
+                : null;
+
+        return _propertyFromDb(row, imageUrls: imageUrls, ownerUsername: ownerUsername);
       }).toList();
 
       setState(() {
@@ -176,9 +286,9 @@ class _UserDashboardState extends State<UserDashboard> {
             '''
             id,
             owner_id,
+            username,
             title,
             description,
-            location,
             city,
             type,
             area,
@@ -188,6 +298,8 @@ class _UserDashboardState extends State<UserDashboard> {
             views,
             status,
             created_at,
+            latitude,
+            longitude,
             property_images:property_images (
               path,
               sort_order
@@ -198,6 +310,10 @@ class _UserDashboardState extends State<UserDashboard> {
           .order('created_at', ascending: false);
 
       final mineRows = (mineData as List).cast<Map>();
+
+      // في صفحة "إعلاناتي" نستخدم username من users_profiles للمالك نفسه لو موجود
+      final myNameMap = await _fetchUsernamesByUserIds([_uid]);
+      final myUsername = myNameMap[_uid];
 
       final mineList = mineRows.map((row) {
         final imagesRaw = (row['property_images'] as List?) ?? const [];
@@ -214,7 +330,13 @@ class _UserDashboardState extends State<UserDashboard> {
             .map((p) => _sb.storage.from('property-images').getPublicUrl(p))
             .toList();
 
-        return _propertyFromDb(row, imageUrls: imageUrls);
+        final ownerUsername = (myUsername?.trim().isNotEmpty ?? false)
+            ? myUsername!.trim()
+            : ((row['username'] as String?)?.trim().isNotEmpty ?? false)
+                ? (row['username'] as String).trim()
+                : null;
+
+        return _propertyFromDb(row, imageUrls: imageUrls, ownerUsername: ownerUsername);
       }).toList();
 
       final byId = <String, Property>{};
@@ -265,11 +387,17 @@ class _UserDashboardState extends State<UserDashboard> {
   // Model helpers
   // =========================
 
-  Property _propertyFromDb(Map row, {required List<String> imageUrls}) {
+  Property _propertyFromDb(Map row, {required List<String> imageUrls, required String? ownerUsername}) {
     double toDouble(dynamic v) {
       if (v == null) return 0;
       if (v is num) return v.toDouble();
       return double.tryParse(v.toString()) ?? 0;
+    }
+
+    double? toDoubleN(dynamic v) {
+      if (v == null) return null;
+      if (v is num) return v.toDouble();
+      return double.tryParse(v.toString());
     }
 
     int toInt(dynamic v) {
@@ -290,6 +418,7 @@ class _UserDashboardState extends State<UserDashboard> {
     return Property(
       id: (row['id'] as String?) ?? '',
       ownerId: (row['owner_id'] as String?) ?? '',
+      ownerUsername: ownerUsername,
       title: (row['title'] as String?) ?? '',
       type: _parseType(typeStr),
       description: (row['description'] as String?) ?? '',
@@ -301,13 +430,13 @@ class _UserDashboardState extends State<UserDashboard> {
       images: imageUrls,
       views: toInt(row['views']),
       createdAt: parseDt(row['created_at']),
+      latitude: toDoubleN(row['latitude']),
+      longitude: toDoubleN(row['longitude']),
     );
   }
 
   String _mergeLocation(Map row) {
-    final loc = (row['location'] as String?)?.trim();
     final city = (row['city'] as String?)?.trim();
-    if (loc != null && loc.isNotEmpty) return loc;
     if (city != null && city.isNotEmpty) return city;
     return '';
   }
@@ -358,6 +487,18 @@ class _UserDashboardState extends State<UserDashboard> {
   // Navigation / actions
   // =========================
 
+  void _readArgsInBuildOnce(BuildContext context) {
+    final args = ModalRoute.of(context)?.settings.arguments;
+    if (args is Map) {
+      final u = args['username'];
+      if (u is String && u.isNotEmpty) _usernameNationalId = u;
+      final l = args['lang'];
+      if (l is String && l.isNotEmpty && l != _lang) {
+        langNotifier.value = l;
+      }
+    }
+  }
+
   Future<void> _openSettings() async {
     final result = await Navigator.push(
       context,
@@ -380,21 +521,48 @@ class _UserDashboardState extends State<UserDashboard> {
 
     if (!mounted) return;
 
-    // ✅ مضمون يرجّع لتسجيل الدخول حتى لو الستاك ملخبط
     try {
       Navigator.of(context).pushNamedAndRemoveUntil('/login', (r) => false);
     } catch (_) {
-      // fallback: يرجّع لأول صفحة
       Navigator.of(context).popUntil((r) => r.isFirst);
     }
   }
 
   Future<void> _openAdd() async {
+    if (_uid.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          behavior: SnackBarBehavior.floating,
+          content: Text(_isAr ? 'يجب تسجيل الدخول أولاً' : 'You must log in first'),
+        ),
+      );
+      return;
+    }
+
     await Navigator.push(
       context,
-      MaterialPageRoute(builder: (_) => const AddPropertyPage()),
+      MaterialPageRoute(
+        builder: (_) => addp.AddPropertyPage(userId: _uid, lang: _lang),
+      ),
     );
+
     await _reloadAll();
+  }
+
+  void _openDetails(Property p) {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => details.PropertyDetailsPage(
+          property: p,
+          isAr: _isAr,
+          currentUserId: _uid.isEmpty ? 'guest' : _uid,
+          ownerUsername: p.ownerUsername,
+          isFavorite: _isFav(p.id),
+          onToggleFavorite: () => _toggleFav(p.id),
+        ),
+      ),
+    );
   }
 
   // =========================
@@ -436,9 +604,7 @@ class _UserDashboardState extends State<UserDashboard> {
           ConstrainedBox(
             constraints: const BoxConstraints(minWidth: 240, maxWidth: 620),
             child: _SearchField(
-              hint: _isAr
-                  ? 'ابحث (عنوان / موقع / وصف)...'
-                  : 'Search (title / location / description)...',
+              hint: _isAr ? 'ابحث (عنوان / مدينة / وصف)...' : 'Search (title / city / description)...',
               onChanged: (v) {
                 _debounce?.cancel();
                 _debounce = Timer(const Duration(milliseconds: 250), () {
@@ -469,6 +635,8 @@ class _UserDashboardState extends State<UserDashboard> {
 
   @override
   Widget build(BuildContext context) {
+    _readArgsInBuildOnce(context);
+
     final theme = Theme.of(context);
     final cs = theme.colorScheme;
 
@@ -496,16 +664,52 @@ class _UserDashboardState extends State<UserDashboard> {
       textDirection: _isAr ? TextDirection.rtl : TextDirection.ltr,
       child: PopScope(
         canPop: false,
-        onPopInvoked: (_) => _logout(), // ✅ زر الرجوع يخرج ويعيدك لصفحة الدخول
+        onPopInvoked: (_) => _logout(),
         child: Scaffold(
           backgroundColor: cs.surface,
           appBar: AppBar(
             elevation: 0,
-            title: Text(
-              _tabTitle(),
-              style: const TextStyle(fontWeight: FontWeight.w900),
+            title: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(_tabTitle(), style: const TextStyle(fontWeight: FontWeight.w900)),
+                if (_usernameNationalId.isNotEmpty)
+                  Text(
+                    _isAr ? 'المستخدم: $_usernameNationalId' : 'User: $_usernameNationalId',
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w800,
+                      color: cs.onSurfaceVariant,
+                    ),
+                  ),
+              ],
             ),
             actions: [
+              if (_uid.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsetsDirectional.only(end: 6),
+                  child: Center(
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(999),
+                        border: Border.all(color: cs.outlineVariant.withOpacity(0.5)),
+                        color: cs.surfaceContainerHighest,
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.favorite, size: 16, color: Colors.redAccent.withOpacity(0.95)),
+                          const SizedBox(width: 6),
+                          Text(
+                            '${_favoriteIds.length}',
+                            style: TextStyle(fontWeight: FontWeight.w900, color: cs.onSurface),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
               IconButton(
                 tooltip: _isAr ? 'إعدادات' : 'Settings',
                 icon: const Icon(Icons.settings),
@@ -514,18 +718,13 @@ class _UserDashboardState extends State<UserDashboard> {
               IconButton(
                 tooltip: _isAr ? 'تسجيل خروج' : 'Logout',
                 icon: _loggingOut
-                    ? const SizedBox(
-                        width: 22,
-                        height: 22,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
+                    ? const SizedBox(width: 22, height: 22, child: CircularProgressIndicator(strokeWidth: 2))
                     : const Icon(Icons.logout),
                 onPressed: _loggingOut ? null : _logout,
               ),
             ],
             bottom: PreferredSize(
-              preferredSize:
-                  Size.fromHeight((_tabIndex == 0 || _tabIndex == 1) ? 92 : 0),
+              preferredSize: Size.fromHeight((_tabIndex == 0 || _tabIndex == 1) ? 92 : 0),
               child: (_tabIndex == 0 || _tabIndex == 1)
                   ? _buildTopFilters(
                       onRefresh: () async {
@@ -543,7 +742,6 @@ class _UserDashboardState extends State<UserDashboard> {
             child: IndexedStack(
               index: _tabIndex,
               children: [
-                // 0) Home
                 RefreshIndicator(
                   onRefresh: _loadHome,
                   child: _buildPropertiesBody(
@@ -556,8 +754,6 @@ class _UserDashboardState extends State<UserDashboard> {
                         : 'There are no listings in the database right now. Try again later.',
                   ),
                 ),
-
-                // 1) My Listings
                 RefreshIndicator(
                   onRefresh: _loadMineAndOffers,
                   child: _buildPropertiesBody(
@@ -565,22 +761,11 @@ class _UserDashboardState extends State<UserDashboard> {
                     error: _errorMine,
                     items: myItems,
                     emptyTitle: _isAr ? 'لا توجد إعلانات لك' : 'No listings for you',
-                    emptySubtitle: _isAr
-                        ? 'أضف إعلاناً جديداً وسيظهر هنا.'
-                        : 'Add a new listing and it will appear here.',
+                    emptySubtitle: _isAr ? 'أضف إعلاناً جديداً وسيظهر هنا.' : 'Add a new listing and it will appear here.',
                   ),
                 ),
-
-                // 2) Offers
-                RefreshIndicator(
-                  onRefresh: _loadMineAndOffers,
-                  child: _buildOffersBody(),
-                ),
-
-                // 3) Support/Chat
+                RefreshIndicator(onRefresh: _loadMineAndOffers, child: _buildOffersBody()),
                 const ChatPage(),
-
-                // 4) Settings
                 SettingsPage(lang: _lang),
               ],
             ),
@@ -591,10 +776,7 @@ class _UserDashboardState extends State<UserDashboard> {
                   foregroundColor: Colors.white,
                   onPressed: _openAdd,
                   icon: const Icon(Icons.add_home_work_outlined),
-                  label: Text(
-                    _isAr ? 'إضافة إعلان' : 'Add Listing',
-                    style: const TextStyle(fontWeight: FontWeight.w900),
-                  ),
+                  label: Text(_isAr ? 'إضافة إعلان' : 'Add Listing', style: const TextStyle(fontWeight: FontWeight.w900)),
                 )
               : null,
           bottomNavigationBar: NavigationBarTheme(
@@ -604,31 +786,11 @@ class _UserDashboardState extends State<UserDashboard> {
               onDestinationSelected: (i) => setState(() => _tabIndex = i),
               indicatorColor: _bankColor.withValues(alpha: 28),
               destinations: [
-                NavigationDestination(
-                  icon: const Icon(Icons.home_outlined),
-                  selectedIcon: const Icon(Icons.home),
-                  label: _isAr ? 'الرئيسية' : 'Home',
-                ),
-                NavigationDestination(
-                  icon: const Icon(Icons.list_alt_outlined),
-                  selectedIcon: const Icon(Icons.list_alt),
-                  label: _isAr ? 'إعلاناتي' : 'My Ads',
-                ),
-                NavigationDestination(
-                  icon: const Icon(Icons.local_offer_outlined),
-                  selectedIcon: const Icon(Icons.local_offer),
-                  label: _isAr ? 'العروض' : 'Offers',
-                ),
-                NavigationDestination(
-                  icon: const Icon(Icons.support_agent_outlined),
-                  selectedIcon: const Icon(Icons.support_agent),
-                  label: _isAr ? 'الدعم' : 'Support',
-                ),
-                NavigationDestination(
-                  icon: const Icon(Icons.settings_outlined),
-                  selectedIcon: const Icon(Icons.settings),
-                  label: _isAr ? 'الإعدادات' : 'Settings',
-                ),
+                NavigationDestination(icon: const Icon(Icons.home_outlined), selectedIcon: const Icon(Icons.home), label: _isAr ? 'الرئيسية' : 'Home'),
+                NavigationDestination(icon: const Icon(Icons.list_alt_outlined), selectedIcon: const Icon(Icons.list_alt), label: _isAr ? 'إعلاناتي' : 'My Ads'),
+                NavigationDestination(icon: const Icon(Icons.local_offer_outlined), selectedIcon: const Icon(Icons.local_offer), label: _isAr ? 'العروض' : 'Offers'),
+                NavigationDestination(icon: const Icon(Icons.support_agent_outlined), selectedIcon: const Icon(Icons.support_agent), label: _isAr ? 'الدعم' : 'Support'),
+                NavigationDestination(icon: const Icon(Icons.settings_outlined), selectedIcon: const Icon(Icons.settings), label: _isAr ? 'الإعدادات' : 'Settings'),
               ],
             ),
           ),
@@ -653,15 +815,10 @@ class _UserDashboardState extends State<UserDashboard> {
     if (loading) {
       return ListView(
         physics: const AlwaysScrollableScrollPhysics(),
-        children: const [
-          SizedBox(height: 120),
-          Center(child: CircularProgressIndicator()),
-          SizedBox(height: 120),
-        ],
+        children: const [SizedBox(height: 120), Center(child: CircularProgressIndicator()), SizedBox(height: 120)],
       );
     }
 
-    // ✅ خطأ: نعرض نص عربي مناسب + نص توضيحي عربي بدل الإنجليزي
     if (error != null) {
       return ListView(
         physics: const AlwaysScrollableScrollPhysics(),
@@ -670,28 +827,16 @@ class _UserDashboardState extends State<UserDashboard> {
           const SizedBox(height: 80),
           Icon(Icons.wifi_off_outlined, size: 44, color: cs.onSurfaceVariant),
           const SizedBox(height: 12),
-          Center(
-            child: Text(
-              _failLoadTitle(),
-              style: Theme.of(context)
-                  .textTheme
-                  .titleMedium
-                  ?.copyWith(fontWeight: FontWeight.w900),
-            ),
-          ),
+          Center(child: Text(_failLoadTitle(), style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w900))),
           const SizedBox(height: 8),
           Center(
             child: Text(
               _failLoadSubtitle(),
-              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                    color: cs.onSurfaceVariant,
-                    fontWeight: FontWeight.w700,
-                  ),
+              style: Theme.of(context).textTheme.bodyMedium?.copyWith(color: cs.onSurfaceVariant, fontWeight: FontWeight.w700),
               textAlign: TextAlign.center,
             ),
           ),
           const SizedBox(height: 10),
-          // نُبقي تفاصيل الخطأ للمطور فقط
           if (kDebugMode) Text(error, textAlign: TextAlign.center),
           const SizedBox(height: 14),
           Center(
@@ -710,7 +855,6 @@ class _UserDashboardState extends State<UserDashboard> {
       );
     }
 
-    // ✅ لا يوجد إعلانات: نعرض "لا توجد إعلانات متاحة" بدل "تعذر تحميل..."
     if (items.isEmpty) {
       return ListView(
         physics: const AlwaysScrollableScrollPhysics(),
@@ -721,27 +865,17 @@ class _UserDashboardState extends State<UserDashboard> {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Icon(
-                  Icons.home_outlined,
-                  size: 84,
-                  color: _bankColor.withValues(alpha: 180),
-                ),
+                Icon(Icons.home_outlined, size: 84, color: _bankColor.withValues(alpha: 180)),
                 const SizedBox(height: 18),
                 Text(
                   emptyTitle,
-                  style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                        fontWeight: FontWeight.w900,
-                        color: cs.onSurfaceVariant,
-                      ),
+                  style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w900, color: cs.onSurfaceVariant),
                   textAlign: TextAlign.center,
                 ),
                 const SizedBox(height: 10),
                 Text(
                   emptySubtitle,
-                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                        color: cs.onSurfaceVariant,
-                        fontWeight: FontWeight.w700,
-                      ),
+                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(color: cs.onSurfaceVariant, fontWeight: FontWeight.w700),
                   textAlign: TextAlign.center,
                 ),
                 const SizedBox(height: 22),
@@ -768,6 +902,9 @@ class _UserDashboardState extends State<UserDashboard> {
       currentUserId: _uid.isEmpty ? 'guest' : _uid,
       isAr: _isAr,
       bankColor: _bankColor,
+      isFav: (id) => _isFav(id),
+      onToggleFav: (id) => _toggleFav(id),
+      onOpenDetails: (p) => _openDetails(p),
     );
   }
 
@@ -777,11 +914,7 @@ class _UserDashboardState extends State<UserDashboard> {
     if (_loadingOffers) {
       return ListView(
         physics: const AlwaysScrollableScrollPhysics(),
-        children: const [
-          SizedBox(height: 120),
-          Center(child: CircularProgressIndicator()),
-          SizedBox(height: 120),
-        ],
+        children: const [SizedBox(height: 120), Center(child: CircularProgressIndicator()), SizedBox(height: 120)],
       );
     }
 
@@ -802,10 +935,7 @@ class _UserDashboardState extends State<UserDashboard> {
           Center(
             child: Text(
               _isAr ? 'تحقق من الاتصال ثم أعد المحاولة.' : 'Check connection then retry.',
-              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                    color: cs.onSurfaceVariant,
-                    fontWeight: FontWeight.w700,
-                  ),
+              style: Theme.of(context).textTheme.bodyMedium?.copyWith(color: cs.onSurfaceVariant, fontWeight: FontWeight.w700),
               textAlign: TextAlign.center,
             ),
           ),
@@ -837,18 +967,11 @@ class _UserDashboardState extends State<UserDashboard> {
           Center(
             child: Column(
               children: [
-                Icon(
-                  Icons.local_offer_outlined,
-                  size: 84,
-                  color: _bankColor.withValues(alpha: 180),
-                ),
+                Icon(Icons.local_offer_outlined, size: 84, color: _bankColor.withValues(alpha: 180)),
                 const SizedBox(height: 18),
                 Text(
                   _isAr ? 'لا توجد عروض على إعلاناتك' : 'No offers on your listings',
-                  style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                        fontWeight: FontWeight.w900,
-                        color: cs.onSurfaceVariant,
-                      ),
+                  style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w900, color: cs.onSurfaceVariant),
                   textAlign: TextAlign.center,
                 ),
                 const SizedBox(height: 10),
@@ -856,10 +979,7 @@ class _UserDashboardState extends State<UserDashboard> {
                   _isAr
                       ? 'عند وصول أي حجز/عرض (reservations) على عقاراتك سيظهر هنا.'
                       : 'When any reservation/offer is created for your properties, it will appear here.',
-                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                        color: cs.onSurfaceVariant,
-                        fontWeight: FontWeight.w700,
-                      ),
+                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(color: cs.onSurfaceVariant, fontWeight: FontWeight.w700),
                   textAlign: TextAlign.center,
                 ),
                 const SizedBox(height: 22),
@@ -892,8 +1012,7 @@ class _UserDashboardState extends State<UserDashboard> {
         final p = _myPropertyById[propertyId];
 
         final createdAt = _tryParseDt(r['created_at']);
-        final createdText =
-            createdAt == null ? (_isAr ? 'غير معروف' : 'Unknown') : _timeAgo(createdAt, _isAr);
+        final createdText = createdAt == null ? (_isAr ? 'غير معروف' : 'Unknown') : _timeAgo(createdAt, _isAr);
 
         final status = (r['status'] ?? r['state'] ?? '').toString();
         final amount = r['amount'] ?? r['price'] ?? r['offer_price'] ?? r['bid'] ?? r['value'];
@@ -919,10 +1038,7 @@ class _UserDashboardState extends State<UserDashboard> {
                 Container(
                   width: 44,
                   height: 44,
-                  decoration: BoxDecoration(
-                    color: _bankColor.withValues(alpha: 18),
-                    borderRadius: BorderRadius.circular(14),
-                  ),
+                  decoration: BoxDecoration(color: _bankColor.withValues(alpha: 18), borderRadius: BorderRadius.circular(14)),
                   child: Icon(Icons.local_offer_outlined, color: _bankColor),
                 ),
                 const SizedBox(width: 10),
@@ -939,10 +1055,7 @@ class _UserDashboardState extends State<UserDashboard> {
                       const SizedBox(height: 4),
                       Text(
                         _isAr ? 'منذ: $createdText' : 'Time: $createdText',
-                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                              color: Theme.of(context).colorScheme.onSurfaceVariant,
-                              fontWeight: FontWeight.w700,
-                            ),
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Theme.of(context).colorScheme.onSurfaceVariant, fontWeight: FontWeight.w700),
                       ),
                       const SizedBox(height: 6),
                       Wrap(
@@ -951,9 +1064,7 @@ class _UserDashboardState extends State<UserDashboard> {
                         children: [
                           _MiniChip(
                             icon: Icons.tag,
-                            text: _isAr
-                                ? 'الحالة: ${status.isEmpty ? 'غير محدد' : status}'
-                                : 'Status: ${status.isEmpty ? 'N/A' : status}',
+                            text: _isAr ? 'الحالة: ${status.isEmpty ? 'غير محدد' : status}' : 'Status: ${status.isEmpty ? 'N/A' : status}',
                             bankColor: _bankColor,
                           ),
                           _MiniChip(
@@ -1014,11 +1125,7 @@ class _MiniChip extends StatelessWidget {
   final String text;
   final Color bankColor;
 
-  const _MiniChip({
-    required this.icon,
-    required this.text,
-    required this.bankColor,
-  });
+  const _MiniChip({required this.icon, required this.text, required this.bankColor});
 
   @override
   Widget build(BuildContext context) {
@@ -1038,11 +1145,7 @@ class _MiniChip extends StatelessWidget {
           const SizedBox(width: 6),
           Text(
             text,
-            style: TextStyle(
-              fontSize: 12,
-              fontWeight: FontWeight.w800,
-              color: cs.onSurface,
-            ),
+            style: TextStyle(fontSize: 12, fontWeight: FontWeight.w800, color: cs.onSurface),
           ),
         ],
       ),
@@ -1056,11 +1159,18 @@ class _PropertyGrid extends StatelessWidget {
   final bool isAr;
   final Color bankColor;
 
+  final bool Function(String id) isFav;
+  final Future<void> Function(String id) onToggleFav;
+  final void Function(Property p) onOpenDetails;
+
   const _PropertyGrid({
     required this.items,
     required this.currentUserId,
     required this.isAr,
     required this.bankColor,
+    required this.isFav,
+    required this.onToggleFav,
+    required this.onOpenDetails,
   });
 
   int _crossAxisCount(double w) {
@@ -1079,10 +1189,7 @@ class _PropertyGrid extends StatelessWidget {
 
         return GridView.builder(
           physics: const AlwaysScrollableScrollPhysics(),
-          padding: EdgeInsets.symmetric(
-            horizontal: w >= 900 ? 18 : 12,
-            vertical: 12,
-          ),
+          padding: EdgeInsets.symmetric(horizontal: w >= 900 ? 18 : 12, vertical: 12),
           gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
             crossAxisCount: cross,
             mainAxisSpacing: 12,
@@ -1097,6 +1204,9 @@ class _PropertyGrid extends StatelessWidget {
               isOwner: p.ownerId == currentUserId,
               isAr: isAr,
               bankColor: bankColor,
+              favorite: isFav(p.id),
+              onToggleFav: () => onToggleFav(p.id),
+              onOpenDetails: () => onOpenDetails(p),
             );
           },
         );
@@ -1111,11 +1221,18 @@ class _RealEstateCard extends StatelessWidget {
   final bool isAr;
   final Color bankColor;
 
+  final bool favorite;
+  final VoidCallback onToggleFav;
+  final VoidCallback onOpenDetails;
+
   const _RealEstateCard({
     required this.property,
     required this.isOwner,
     required this.isAr,
     required this.bankColor,
+    required this.favorite,
+    required this.onToggleFav,
+    required this.onOpenDetails,
   });
 
   @override
@@ -1126,19 +1243,13 @@ class _RealEstateCard extends StatelessWidget {
 
     return InkWell(
       borderRadius: BorderRadius.circular(18),
-      onTap: () {},
+      onTap: onOpenDetails,
       child: Container(
         decoration: BoxDecoration(
           color: cs.surface,
           borderRadius: BorderRadius.circular(18),
           border: Border.all(color: cs.outlineVariant.withValues(alpha: 115)),
-          boxShadow: [
-            BoxShadow(
-              blurRadius: 18,
-              offset: const Offset(0, 10),
-              color: cs.shadow.withValues(alpha: 26),
-            )
-          ],
+          boxShadow: [BoxShadow(blurRadius: 18, offset: const Offset(0, 10), color: cs.shadow.withValues(alpha: 26))],
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -1169,6 +1280,30 @@ class _RealEstateCard extends StatelessWidget {
                         icon: Icons.remove_red_eye_outlined,
                         background: Colors.black.withValues(alpha: 115),
                         foreground: Colors.white,
+                      ),
+                    ),
+                    Positioned(
+                      top: 10,
+                      left: 10,
+                      child: Material(
+                        color: Colors.transparent,
+                        child: InkWell(
+                          borderRadius: BorderRadius.circular(999),
+                          onTap: onToggleFav,
+                          child: Container(
+                            padding: const EdgeInsets.all(8),
+                            decoration: BoxDecoration(
+                              color: Colors.black.withOpacity(0.35),
+                              borderRadius: BorderRadius.circular(999),
+                              border: Border.all(color: Colors.white.withOpacity(0.25)),
+                            ),
+                            child: Icon(
+                              favorite ? Icons.favorite : Icons.favorite_border,
+                              color: favorite ? Colors.redAccent : Colors.white,
+                              size: 18,
+                            ),
+                          ),
+                        ),
                       ),
                     ),
                   ],
@@ -1224,9 +1359,7 @@ class _RealEstateCard extends StatelessWidget {
                       const Spacer(),
                       Text(
                         property.isAuction
-                            ? (isAr
-                                ? 'أعلى مزايدة: ${_money(property.currentBid ?? 0)} ر.س'
-                                : 'Top bid: ${_money(property.currentBid ?? 0)} SAR')
+                            ? (isAr ? 'أعلى مزايدة: ${_money(property.currentBid ?? 0)} ر.س' : 'Top bid: ${_money(property.currentBid ?? 0)} SAR')
                             : (isAr ? 'السعر: ${_money(property.price)} ر.س' : 'Price: ${_money(property.price)} SAR'),
                         style: theme.textTheme.bodyMedium?.copyWith(
                           fontWeight: FontWeight.w900,
@@ -1238,17 +1371,12 @@ class _RealEstateCard extends StatelessWidget {
                   const Divider(height: 18),
                   Row(
                     children: [
-                      Text(
-                        timeText,
-                        style: theme.textTheme.bodySmall?.copyWith(color: cs.onSurfaceVariant),
-                      ),
+                      Text(timeText, style: theme.textTheme.bodySmall?.copyWith(color: cs.onSurfaceVariant)),
                       const Spacer(),
                       IconButton(
                         tooltip: isAr ? 'مراسلة' : 'Message',
                         icon: Icon(Icons.chat_bubble_outline, color: bankColor),
-                        onPressed: () {
-                          Navigator.push(context, MaterialPageRoute(builder: (_) => const ChatPage()));
-                        },
+                        onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const ChatPage())),
                       ),
                       if (isOwner)
                         IconButton(
@@ -1305,6 +1433,8 @@ class _PropertyImage extends StatelessWidget {
   final List<String> urls;
   const _PropertyImage({required this.urls});
 
+  bool _isUrl(String s) => s.startsWith('http://') || s.startsWith('https://');
+
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
@@ -1316,10 +1446,15 @@ class _PropertyImage extends StatelessWidget {
       );
     }
 
-    final first = urls.first;
-    final isUrl = first.startsWith('http://') || first.startsWith('https://');
+    final first = urls.first.trim();
+    if (first.isEmpty) {
+      return Container(
+        color: cs.surfaceContainerHighest,
+        child: const Center(child: Icon(Icons.image_not_supported_outlined)),
+      );
+    }
 
-    if (isUrl) {
+    if (_isUrl(first)) {
       return Image.network(
         first,
         fit: BoxFit.cover,
@@ -1347,12 +1482,7 @@ class _Pill extends StatelessWidget {
   final Color? background;
   final Color? foreground;
 
-  const _Pill({
-    required this.text,
-    required this.icon,
-    this.background,
-    this.foreground,
-  });
+  const _Pill({required this.text, required this.icon, this.background, this.foreground});
 
   @override
   Widget build(BuildContext context) {
@@ -1372,14 +1502,7 @@ class _Pill extends StatelessWidget {
         children: [
           Icon(icon, size: 16, color: fg),
           const SizedBox(width: 6),
-          Text(
-            text,
-            style: TextStyle(
-              color: fg,
-              fontWeight: FontWeight.w900,
-              fontSize: 12,
-            ),
-          ),
+          Text(text, style: TextStyle(color: fg, fontWeight: FontWeight.w900, fontSize: 12)),
         ],
       ),
     );
@@ -1404,10 +1527,7 @@ class _SearchField extends StatelessWidget {
         hintStyle: TextStyle(color: cs.onSurfaceVariant, fontWeight: FontWeight.w800),
         prefixIcon: Icon(Icons.search, color: cs.onSurfaceVariant),
         border: OutlineInputBorder(borderRadius: BorderRadius.circular(14)),
-        enabledBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(14),
-          borderSide: BorderSide(color: cs.outlineVariant),
-        ),
+        enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(14), borderSide: BorderSide(color: cs.outlineVariant)),
         focusedBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(14),
           borderSide: const BorderSide(color: _UserDashboardState._bankColor, width: 1.6),
@@ -1424,11 +1544,7 @@ class _SortMenu extends StatelessWidget {
   final String value;
   final ValueChanged<String> onChanged;
 
-  const _SortMenu({
-    required this.isAr,
-    required this.value,
-    required this.onChanged,
-  });
+  const _SortMenu({required this.isAr, required this.value, required this.onChanged});
 
   @override
   Widget build(BuildContext context) {
