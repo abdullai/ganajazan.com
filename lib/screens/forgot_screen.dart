@@ -10,26 +10,24 @@ class ForgotScreen extends StatefulWidget {
 
 class _ForgotScreenState extends State<ForgotScreen> {
   final usernameController = TextEditingController();
-  final codeController = TextEditingController();
-  final newPasswordController = TextEditingController();
 
   String msg = '';
   bool isError = false;
   bool isLoading = false;
-  bool obscureNewPassword = true;
 
   @override
   void dispose() {
     usernameController.dispose();
-    codeController.dispose();
-    newPasswordController.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    // ملاحظة: النصوص عندك طالعة "ط..." بسبب ترميز/ملف غير UTF-8
-    // الكود يعمل، لكن الأفضل لاحقًا حفظ الملف UTF-8 وإعادة كتابة النصوص العربية.
+    // ✅ هذه الشاشة أصبحت "طلب رابط استعادة كلمة المرور" عبر Supabase Auth
+    // - توحيد username (هوية/إقامة 10 أرقام)
+    // - استدعاء RPC get_status_by_username ضمن AuthService.login / sendResetPasswordEmail
+    // - تسجيل الأحداث الأمنية ضمن AuthService (password_recovery_sent / password_recovery_failed / login_blocked ...)
+
     return Scaffold(
       appBar: AppBar(
         title: const Text('استعادة الحساب'),
@@ -54,7 +52,7 @@ class _ForgotScreenState extends State<ForgotScreen> {
             ),
             const SizedBox(height: 10),
             Text(
-              'أدخل رقم الهوية ورمز الاستعادة ثم اختر كلمة مرور جديدة (الرمز الافتراضي: 0000)',
+              'أدخل رقم الهوية/الإقامة وسيتم إرسال رابط لإعادة تعيين كلمة المرور إلى بريدك المرتبط بالحساب.',
               style: TextStyle(
                 fontSize: 14,
                 color: Colors.grey[600],
@@ -73,41 +71,25 @@ class _ForgotScreenState extends State<ForgotScreen> {
                 border: OutlineInputBorder(),
                 counterText: '',
               ),
+              onChanged: (v) {
+                // ✅ توحيد الأرقام العربية/الفارسية تلقائياً
+                final normalized = AuthService.normalizeNumbers(v);
+                if (normalized != v) {
+                  final sel = usernameController.selection;
+                  usernameController.value = TextEditingValue(
+                    text: normalized,
+                    selection: sel,
+                  );
+                }
+              },
             ),
-            const SizedBox(height: 15),
+            const SizedBox(height: 20),
 
-            TextField(
-              controller: codeController,
-              decoration: const InputDecoration(
-                labelText: 'رمز الاستعادة',
-                hintText: '0000',
-                prefixIcon: Icon(Icons.lock_reset),
-                border: OutlineInputBorder(),
-              ),
-            ),
-            const SizedBox(height: 15),
-
-            TextField(
-              controller: newPasswordController,
-              obscureText: obscureNewPassword,
-              decoration: InputDecoration(
-                labelText: 'كلمة مرور جديدة',
-                hintText: 'مثال: New@12345',
-                prefixIcon: const Icon(Icons.password),
-                border: const OutlineInputBorder(),
-                suffixIcon: IconButton(
-                  icon: Icon(obscureNewPassword ? Icons.visibility : Icons.visibility_off),
-                  onPressed: () => setState(() => obscureNewPassword = !obscureNewPassword),
-                ),
-              ),
-            ),
-
-            const SizedBox(height: 30),
             SizedBox(
               width: double.infinity,
               height: 50,
               child: ElevatedButton(
-                onPressed: isLoading ? null : _handleRecovery,
+                onPressed: isLoading ? null : _handleSendLink,
                 style: ElevatedButton.styleFrom(
                   backgroundColor: Theme.of(context).primaryColor,
                   shape: RoundedRectangleBorder(
@@ -124,7 +106,7 @@ class _ForgotScreenState extends State<ForgotScreen> {
                         ),
                       )
                     : const Text(
-                        'فتح الحساب',
+                        'إرسال رابط الاستعادة',
                         style: TextStyle(
                           fontSize: 16,
                           fontWeight: FontWeight.bold,
@@ -132,7 +114,8 @@ class _ForgotScreenState extends State<ForgotScreen> {
                       ),
               ),
             ),
-            const SizedBox(height: 15),
+
+            const SizedBox(height: 10),
 
             TextButton(
               onPressed: () => Navigator.pop(context),
@@ -175,14 +158,12 @@ class _ForgotScreenState extends State<ForgotScreen> {
     );
   }
 
-  Future<void> _handleRecovery() async {
-    final username = usernameController.text.trim();
-    final code = codeController.text.trim();
-    final newPassword = newPasswordController.text;
+  Future<void> _handleSendLink() async {
+    final username = AuthService.normalizeNumbers(usernameController.text).trim();
 
-    if (username.isEmpty || code.isEmpty || newPassword.isEmpty) {
+    if (username.isEmpty) {
       setState(() {
-        msg = 'الرجاء تعبئة جميع الحقول';
+        msg = 'الرجاء إدخال رقم الهوية/الإقامة';
         isError = true;
       });
       return;
@@ -196,9 +177,9 @@ class _ForgotScreenState extends State<ForgotScreen> {
       return;
     }
 
-    if (newPassword.length < 6) {
+    if (!RegExp(r'^\d{10}$').hasMatch(username)) {
       setState(() {
-        msg = 'كلمة المرور الجديدة يجب ألا تقل عن 6 أحرف';
+        msg = 'رقم الهوية يجب أن يكون أرقام فقط';
         isError = true;
       });
       return;
@@ -210,32 +191,27 @@ class _ForgotScreenState extends State<ForgotScreen> {
       isError = false;
     });
 
-    await Future.delayed(const Duration(milliseconds: 600));
-
-    final result = await AuthService.verifyAndReset(
+    // ✅ ملاحظة مهمة:
+    // redirectTo يجب أن يطابق إعدادات Supabase Auth (Redirect URLs).
+    // إذا عندك Web: http://127.0.0.1:8000/ أو دومين الإنتاج
+    // وإذا عندك Deep Link للتطبيق (aqar://...) ضعه هنا لاحقاً.
+    final res = await AuthService.sendResetPasswordEmail(
       username: username,
-      recoveryCode: code,
-      newPassword: newPassword,
       lang: 'ar',
+      redirectTo: null, // اتركها null الآن إذا إعداداتك تعتمد الافتراضي
     );
 
     setState(() {
       isLoading = false;
-
-      if (result.ok) {
-        msg = result.message.isEmpty
-            ? 'تم فتح الحساب وتحديث كلمة المرور بنجاح. يمكنك تسجيل الدخول الآن.'
-            : result.message;
+      if (res.ok) {
+        msg = res.message.isEmpty
+            ? 'تم إرسال رابط إعادة تعيين كلمة المرور إلى بريدك.'
+            : res.message;
         isError = false;
-
-        Future.delayed(const Duration(seconds: 2), () {
-          if (mounted) Navigator.pop(context);
-        });
       } else {
-        msg = result.message.isEmpty ? 'اسم المستخدم أو رمز الاستعادة غير صحيح.' : result.message;
+        msg = res.message.isEmpty ? 'تعذر إرسال رابط الاستعادة.' : res.message;
         isError = true;
       }
     });
   }
 }
-

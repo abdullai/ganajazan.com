@@ -18,12 +18,15 @@
   "quickLogin": "دخول سريع",
   "forgotUsernameOrPassword": "نسيت اسم المستخدم أو كلمة المرور؟",
 
+  "theme": "المظهر",
   "themeLight": "فاتح",
   "themeDark": "داكن",
   "themeSystem": "حسب النظام",
 
+  "language": "اللغة",
   "languageArabic": "العربية",
   "languageEnglish": "English",
+
   "settings": "الإعدادات",
 
   "usernameHint10Digits": "رقم الهوية/الإقامة (10 أرقام)",
@@ -38,6 +41,7 @@
   "recover": "استعادة",
 
   "verifyTitle": "التحقق",
+  "otpTitle": "التحقق",
   "verifySubtitle": "أدخل رمز التحقق",
   "confirm": "تأكيد",
   "clear": "مسح",

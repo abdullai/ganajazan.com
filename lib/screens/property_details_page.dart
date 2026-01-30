@@ -1,21 +1,18 @@
-﻿// lib/screens/property_details_page.dart
-
-import 'dart:convert';
+﻿import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/property.dart';
+import '../services/reservations_service.dart'; // ✅ مهم (getOrCreatePropertyConversation)
+import 'chat_page.dart'; // ✅ ChatPage يستقبل conversationId
 
 class PropertyDetailsPage extends StatefulWidget {
   final Property property;
   final bool isAr;
   final String currentUserId;
-
-  /// ✅ من users_profiles.username (fallback على properties.username حسب اللي تمرره من الداشبورد)
   final String? ownerUsername;
-
   final bool isFavorite;
   final Future<void> Function() onToggleFavorite;
 
@@ -36,170 +33,189 @@ class PropertyDetailsPage extends StatefulWidget {
 class _PropertyDetailsPageState extends State<PropertyDetailsPage> {
   double? lat;
   double? lng;
+  bool _loadingCoords = false;
 
-  String _coordsKey(String id) => 'coords_$id';
+  bool _openingChat = false;
+
+  bool get _isGuest => widget.currentUserId == 'guest';
 
   @override
   void initState() {
     super.initState();
-
-    // ✅ DB First (بدون ما يسبب خطأ لو الموديل ما فيه latitude/longitude)
-    final dbLat = _tryReadDbLat(widget.property);
-    final dbLng = _tryReadDbLng(widget.property);
-
-    if (dbLat != null && dbLng != null) {
-      lat = dbLat;
-      lng = dbLng;
-    } else {
-      _loadCoords(); // fallback قديم
-    }
+    _loadCoordinates();
   }
 
-  double? _tryReadDbLat(Property p) {
-    try {
-      final dynamic v = (p as dynamic).latitude;
-      if (v == null) return null;
-      if (v is num) return v.toDouble();
-      return null;
-    } catch (_) {
-      return null;
-    }
-  }
+  Future<void> _loadCoordinates() async {
+    setState(() => _loadingCoords = true);
 
-  double? _tryReadDbLng(Property p) {
-    try {
-      final dynamic v = (p as dynamic).longitude;
-      if (v == null) return null;
-      if (v is num) return v.toDouble();
-      return null;
-    } catch (_) {
-      return null;
-    }
-  }
-
-  Future<void> _loadCoords() async {
-    final prefs = await SharedPreferences.getInstance();
-    final raw = prefs.getString(_coordsKey(widget.property.id));
-    if (raw == null) return;
-
-    try {
-      final m = jsonDecode(raw) as Map<String, dynamic>;
-      if (!mounted) return;
+    if (widget.property.latitude != null && widget.property.longitude != null) {
       setState(() {
-        lat = (m['lat'] as num?)?.toDouble();
-        lng = (m['lng'] as num?)?.toDouble();
+        lat = widget.property.latitude;
+        lng = widget.property.longitude;
+        _loadingCoords = false;
       });
-    } catch (_) {}
-  }
-
-  // =========================
-  // Pricing helpers
-  // =========================
-  double _vatAmount(double price) => price * 0.05;
-  double _totalWithVat(double price) => price + _vatAmount(price);
-  double _commissionAmount(double price) => _totalWithVat(price) * 0.025;
-
-  String _money(double v) {
-    final s = v.toStringAsFixed(0);
-    final b = StringBuffer();
-    for (int i = 0; i < s.length; i++) {
-      final fromEnd = s.length - i;
-      b.write(s[i]);
-      if (fromEnd > 1 && fromEnd % 3 == 1) b.write(',');
+      return;
     }
-    return b.toString();
-  }
 
-  String _labelPrice(double v) => widget.isAr ? '${_money(v)} ر.س' : '${_money(v)} SAR';
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final key = 'coords_${widget.property.id}';
+      final raw = prefs.getString(key);
 
-  // =========================
-  // Share text
-  // =========================
-  String _shareText({
-    required String title,
-    required String loc,
-    required double base,
-    required double vat,
-    required double total,
-    required double comm,
-    required String id,
-  }) {
-    final u = widget.ownerUsername;
-    final coords = (lat != null && lng != null)
-        ? '${lat!.toStringAsFixed(6)}, ${lng!.toStringAsFixed(6)}'
-        : null;
-
-    if (widget.isAr) {
-      final sb = StringBuffer()
-        ..writeln('🏡 $title')
-        ..writeln('📍 المدينة: $loc')
-        ..writeln('🆔 رقم الإعلان: $id')
-        ..writeln((u != null && u.trim().isNotEmpty) ? '👤 المعلن: ${u.trim()}' : '')
-        ..writeln('💰 السعر: ${_labelPrice(base)}')
-        ..writeln('🧾 الضريبة (5%): ${_labelPrice(vat)}')
-        ..writeln('✅ الإجمالي بعد الضريبة: ${_labelPrice(total)}')
-        ..writeln('🌐 عمولة المنصة (2.5%): ${_labelPrice(comm)}');
-      if (coords != null) sb.writeln('🧭 الإحداثيات: $coords');
-      sb.writeln('\n#Aqar');
-      return sb.toString().trim();
-    } else {
-      final sb = StringBuffer()
-        ..writeln('🏡 $title')
-        ..writeln('📍 City: $loc')
-        ..writeln('🆔 Listing ID: $id')
-        ..writeln((u != null && u.trim().isNotEmpty) ? '👤 Owner: ${u.trim()}' : '')
-        ..writeln('💰 Price: ${_labelPrice(base)}')
-        ..writeln('🧾 VAT (5%): ${_labelPrice(vat)}')
-        ..writeln('✅ Total incl. VAT: ${_labelPrice(total)}')
-        ..writeln('🌐 Platform fee (2.5%): ${_labelPrice(comm)}');
-      if (coords != null) sb.writeln('🧭 Coordinates: $coords');
-      sb.writeln('\n#Aqar');
-      return sb.toString().trim();
+      if (raw != null) {
+        final data = json.decode(raw) as Map<String, dynamic>;
+        setState(() {
+          lat = (data['lat'] as num?)?.toDouble();
+          lng = (data['lng'] as num?)?.toDouble();
+        });
+      }
+    } catch (_) {
+      // ignore
+    } finally {
+      if (mounted) setState(() => _loadingCoords = false);
     }
   }
 
-  Future<void> _copy(String text, {String? okMsgAr, String? okMsgEn}) async {
-    await Clipboard.setData(ClipboardData(text: text));
-    if (!mounted) return;
+  void _snackLoginRequired() {
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(widget.isAr ? (okMsgAr ?? 'تم النسخ') : (okMsgEn ?? 'Copied'))),
+      SnackBar(
+        behavior: SnackBarBehavior.floating,
+        content: Text(
+          widget.isAr ? 'يجب تسجيل الدخول أولاً' : 'You must log in first',
+        ),
+      ),
     );
   }
 
-  // =========================
-  // Cover helper: URL + asset + empty
-  // =========================
-  Widget _coverImage(ColorScheme cs, bool isDark) {
-    final cover = widget.property.images.isNotEmpty ? widget.property.images.first.trim() : '';
-    final isUrl = cover.startsWith('http://') || cover.startsWith('https://');
-
-    if (cover.isEmpty) {
-      return Container(
-        color: cs.surfaceContainerHighest,
-        child: Center(
-          child: Icon(Icons.image_not_supported_outlined, color: isDark ? Colors.white : cs.onSurface),
-        ),
-      );
+  Future<void> _openChatWithOwner() async {
+    if (_isGuest) {
+      _snackLoginRequired();
+      return;
     }
 
-    if (isUrl) {
-      return Image.network(
-        cover,
-        fit: BoxFit.cover,
-        errorBuilder: (_, __, ___) => Container(
-          color: cs.surfaceContainerHighest,
-          child: Center(child: Icon(Icons.image_not_supported_outlined, color: isDark ? Colors.white : cs.onSurface)),
+    if (_openingChat) return;
+
+    setState(() => _openingChat = true);
+    try {
+      final conversationId =
+          await ReservationsService.getOrCreatePropertyConversation(
+        propertyId: widget.property.id,
+        title: widget.property.title,
+      );
+
+      if (!mounted) return;
+
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => ChatPage(
+            isAr: widget.isAr,
+            conversationId: conversationId,
+          ),
         ),
       );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          behavior: SnackBarBehavior.floating,
+          content: Text(widget.isAr ? 'تعذر فتح الدردشة' : 'Failed to open chat'),
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _openingChat = false);
     }
+  }
 
-    return Image.asset(
-      cover,
-      fit: BoxFit.cover,
-      errorBuilder: (_, __, ___) => Container(
-        color: cs.surfaceContainerHighest,
-        child: Center(child: Icon(Icons.image_not_supported_outlined, color: isDark ? Colors.white : cs.onSurface)),
+  String _formatNumber(double value) {
+    final s = value.toStringAsFixed(0);
+    final buffer = StringBuffer();
+    for (int i = 0; i < s.length; i++) {
+      if (i > 0 && (s.length - i) % 3 == 0) buffer.write(',');
+      buffer.write(s[i]);
+    }
+    return buffer.toString();
+  }
+
+  String get _currencySymbol => widget.isAr ? 'ر.س' : 'SAR';
+
+  double get _basePrice => widget.property.isAuction
+      ? (widget.property.currentBid ?? widget.property.price)
+      : widget.property.price;
+
+  double get _vatAmount => _basePrice * 0.05;
+  double get _platformFee => _basePrice * 0.025;
+  double get _totalAfterVat => _basePrice + _vatAmount;
+  double get _finalTotal => _basePrice + _vatAmount + _platformFee;
+
+  String get _shareText {
+    final ownerName = widget.ownerUsername?.trim() ?? '';
+    final coordsText = (lat != null && lng != null)
+        ? '\n📍 ${widget.isAr ? 'الإحداثيات:' : 'Coordinates:'} ${lat!.toStringAsFixed(6)}, ${lng!.toStringAsFixed(6)}'
+        : '';
+
+    return '''
+🏡 ${widget.property.title}
+📍 ${widget.isAr ? 'الموقع:' : 'Location:'} ${widget.property.location}
+${ownerName.isNotEmpty ? '👤 ${widget.isAr ? 'المعلن:' : 'Owner:'} $ownerName' : ''}
+💰 ${widget.isAr ? 'السعر:' : 'Price:'} ${_formatNumber(_basePrice)} $_currencySymbol
+🧾 ${widget.isAr ? 'الضريبة (5%):' : 'VAT (5%):'} ${_formatNumber(_vatAmount)} $_currencySymbol
+✅ ${widget.isAr ? 'الإجمالي بعد الضريبة:' : 'Total after VAT:'} ${_formatNumber(_totalAfterVat)} $_currencySymbol
+🌐 ${widget.isAr ? 'عمولة المنصة (2.5%):' : 'Platform fee (2.5%):'} ${_formatNumber(_platformFee)} $_currencySymbol
+🏁 ${widget.isAr ? 'الإجمالي النهائي:' : 'Final total:'} ${_formatNumber(_finalTotal)} $_currencySymbol$coordsText
+
+#Aqar #${widget.isAr ? 'عقار' : 'RealEstate'}
+''';
+  }
+
+  Future<void> _copyToClipboard(String text, {String? successMessage}) async {
+    await Clipboard.setData(ClipboardData(text: text));
+    if (!mounted) return;
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(successMessage ?? (widget.isAr ? 'تم النسخ' : 'Copied')),
+        duration: const Duration(seconds: 2),
       ),
+    );
+  }
+
+  Widget _buildCoverImage() {
+    final cs = Theme.of(context).colorScheme;
+
+    if (widget.property.images.isEmpty) {
+      return Container(
+        color: cs.surfaceVariant.withOpacity(0.6),
+        child: Center(
+          child: Icon(Icons.image_not_supported_outlined,
+              size: 60, color: cs.onSurfaceVariant),
+        ),
+      );
+    }
+
+    final imageUrl = widget.property.images.first;
+
+    return Image.network(
+      imageUrl,
+      fit: BoxFit.cover,
+      loadingBuilder: (context, child, loadingProgress) {
+        if (loadingProgress == null) return child;
+        final total = loadingProgress.expectedTotalBytes;
+        final loaded = loadingProgress.cumulativeBytesLoaded;
+        return Center(
+          child: CircularProgressIndicator(
+              value: total != null ? loaded / total : null),
+        );
+      },
+      errorBuilder: (context, error, stackTrace) {
+        return Container(
+          color: cs.surfaceVariant.withOpacity(0.6),
+          child: Center(
+            child: Icon(Icons.broken_image_outlined,
+                size: 60, color: cs.onSurfaceVariant),
+          ),
+        );
+      },
     );
   }
 
@@ -207,202 +223,148 @@ class _PropertyDetailsPageState extends State<PropertyDetailsPage> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final cs = theme.colorScheme;
-    final isDark = theme.brightness == Brightness.dark;
-
-    final textColor = isDark ? Colors.white : cs.onSurface;
-    final subColor = isDark ? Colors.white70 : cs.onSurfaceVariant;
-
-    final base = widget.property.isAuction ? (widget.property.currentBid ?? 0) : widget.property.price;
-    final vat = _vatAmount(base);
-    final total = _totalWithVat(base);
-    final comm = _commissionAmount(base);
-
-    final title = widget.property.title;
-    final loc = widget.property.location;
-
-    final shareText = _shareText(
-      title: title,
-      loc: loc,
-      base: base,
-      vat: vat,
-      total: total,
-      comm: comm,
-      id: widget.property.id,
-    );
 
     return Directionality(
       textDirection: widget.isAr ? TextDirection.rtl : TextDirection.ltr,
       child: Scaffold(
         backgroundColor: cs.surface,
-        appBar: AppBar(
-          title: Text(
-            widget.isAr ? 'تفاصيل الإعلان' : 'Listing details',
-            style: TextStyle(color: textColor, fontWeight: FontWeight.w900),
-          ),
-          iconTheme: IconThemeData(color: isDark ? Colors.white : cs.onSurface),
-          actions: [
-            IconButton(
-              tooltip: widget.isAr ? 'نسخ المعرف' : 'Copy ID',
-              icon: const Icon(Icons.copy_rounded),
-              onPressed: () => _copy(widget.property.id, okMsgAr: 'تم نسخ المعرّف', okMsgEn: 'ID copied'),
-            ),
-            IconButton(
-              tooltip: widget.isAr ? 'مفضلة' : 'Favorite',
-              icon: Icon(widget.isFavorite ? Icons.favorite : Icons.favorite_border),
-              color: widget.isFavorite ? Colors.redAccent : (isDark ? Colors.white : cs.onSurface),
-              onPressed: () async {
-                await widget.onToggleFavorite();
-                if (mounted) setState(() {});
-              },
-            ),
-          ],
-        ),
-        body: ListView(
-          padding: const EdgeInsets.all(14),
-          children: [
-            _AppHeader(isAr: widget.isAr, ownerUsername: widget.ownerUsername),
-            const SizedBox(height: 12),
-
-            ClipRRect(
-              borderRadius: BorderRadius.circular(18),
-              child: AspectRatio(
-                aspectRatio: 16 / 9,
-                child: _coverImage(cs, isDark),
+        body: CustomScrollView(
+          slivers: [
+            SliverAppBar(
+              expandedHeight: 250,
+              pinned: true,
+              flexibleSpace: FlexibleSpaceBar(
+                background: _buildCoverImage(),
+                title: Text(
+                  widget.property.title,
+                  style: const TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.bold,
+                    shadows: [
+                      Shadow(
+                          color: Colors.black,
+                          blurRadius: 10,
+                          offset: Offset(0, 0))
+                    ],
+                  ),
+                ),
               ),
-            ),
-            const SizedBox(height: 12),
-
-            Text(title, style: TextStyle(fontSize: 20, fontWeight: FontWeight.w900, color: textColor)),
-            const SizedBox(height: 6),
-
-            Row(
-              children: [
-                Icon(Icons.location_on_outlined, size: 18, color: isDark ? Colors.white : cs.onSurface),
-                const SizedBox(width: 6),
-                Expanded(
-                  child: Text(loc, style: TextStyle(color: subColor, fontWeight: FontWeight.w800)),
+              actions: [
+                Opacity(
+                  opacity: _isGuest ? 0.5 : 1,
+                  child: IconButton(
+                    icon: Icon(
+                      widget.isFavorite
+                          ? Icons.favorite
+                          : Icons.favorite_border,
+                      color:
+                          widget.isFavorite ? Colors.red : Colors.white,
+                    ),
+                    onPressed: _isGuest
+                        ? _snackLoginRequired
+                        : () async => widget.onToggleFavorite(),
+                  ),
                 ),
               ],
             ),
-            const SizedBox(height: 10),
+            SliverList(
+              delegate: SliverChildListDelegate([
+                Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      _buildOwnerCard(),
+                      const SizedBox(height: 12),
 
-            _infoCard(
-              isDark: isDark,
-              title: widget.isAr ? 'الوصف' : 'Description',
-              child: Text(
-                widget.property.description,
-                style: TextStyle(color: textColor, height: 1.6, fontWeight: FontWeight.w700),
-              ),
-            ),
-            const SizedBox(height: 10),
-
-            _infoCard(
-              isDark: isDark,
-              title: widget.isAr ? 'تفاصيل العقار' : 'Property info',
-              child: Column(
-                children: [
-                  _kv(
-                    widget.isAr ? 'المساحة' : 'Area',
-                    widget.isAr
-                        ? '${widget.property.area.toStringAsFixed(0)} م²'
-                        : '${widget.property.area.toStringAsFixed(0)} m²',
-                    isDark,
-                  ),
-                  const SizedBox(height: 8),
-                  _kv(widget.isAr ? 'النوع' : 'Type', _typeLabel(widget.property.type, widget.isAr), isDark),
-                  const SizedBox(height: 8),
-                  _kv(widget.isAr ? 'المشاهدات' : 'Views', '${widget.property.views}', isDark),
-                ],
-              ),
-            ),
-            const SizedBox(height: 10),
-
-            _infoCard(
-              isDark: isDark,
-              title: widget.isAr ? 'الأسعار والرسوم' : 'Pricing & fees',
-              child: Column(
-                children: [
-                  _kv(
-                    widget.property.isAuction
-                        ? (widget.isAr ? 'أعلى مزايدة' : 'Top bid')
-                        : (widget.isAr ? 'السعر المطلوب' : 'Requested price'),
-                    _labelPrice(base),
-                    isDark,
-                  ),
-                  const SizedBox(height: 8),
-                  _kv(widget.isAr ? 'الضريبة (5%)' : 'VAT (5%)', _labelPrice(vat), isDark),
-                  const SizedBox(height: 8),
-                  _kv(widget.isAr ? 'الإجمالي بعد الضريبة' : 'Total incl. VAT', _labelPrice(total), isDark,
-                      emphasize: true),
-                  const SizedBox(height: 8),
-                  _kv(widget.isAr ? 'عمولة المنصة (2.5%)' : 'Platform fee (2.5%)', _labelPrice(comm), isDark),
-                ],
-              ),
-            ),
-            const SizedBox(height: 10),
-
-            _infoCard(
-              isDark: isDark,
-              title: widget.isAr ? 'الإحداثيات' : 'Coordinates',
-              child: (lat == null || lng == null)
-                  ? Text(
-                      widget.isAr ? 'لا توجد إحداثيات مضافة' : 'No coordinates added',
-                      style: TextStyle(color: subColor, fontWeight: FontWeight.w800),
-                    )
-                  : Column(
-                      children: [
-                        _kv('Latitude', lat!.toStringAsFixed(6), isDark),
-                        const SizedBox(height: 8),
-                        _kv('Longitude', lng!.toStringAsFixed(6), isDark),
-                        const SizedBox(height: 10),
-                        SizedBox(
-                          width: double.infinity,
-                          height: 48,
-                          child: OutlinedButton.icon(
-                            icon: const Icon(Icons.copy_rounded),
-                            label: Text(widget.isAr ? 'نسخ الإحداثيات' : 'Copy coords'),
-                            onPressed: () => _copy(
-                              '${lat!.toStringAsFixed(6)}, ${lng!.toStringAsFixed(6)}',
-                              okMsgAr: 'تم النسخ',
-                              okMsgEn: 'Copied',
-                            ),
+                      SizedBox(
+                        width: double.infinity,
+                        child: ElevatedButton.icon(
+                          icon: _openingChat
+                              ? const SizedBox(
+                                  width: 18,
+                                  height: 18,
+                                  child: CircularProgressIndicator(
+                                      strokeWidth: 2, color: Colors.white),
+                                )
+                              : const Icon(Icons.chat_bubble_outline),
+                          label: Text(widget.isAr
+                              ? 'مراسلة المعلن'
+                              : 'Chat with owner'),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFF0F766E),
+                            foregroundColor: Colors.white,
+                            padding: const EdgeInsets.symmetric(vertical: 14),
+                            shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(12)),
                           ),
+                          onPressed:
+                              _openingChat ? null : _openChatWithOwner,
                         ),
-                      ],
-                    ),
-            ),
+                      ),
 
-            const SizedBox(height: 14),
-
-            Row(
-              children: [
-                Expanded(
-                  child: SizedBox(
-                    height: 50,
-                    child: ElevatedButton.icon(
-                      icon: const Icon(Icons.copy_rounded),
-                      label: Text(widget.isAr ? 'نسخ نص للمشاركة' : 'Copy share text'),
-                      onPressed: () => _copy(shareText, okMsgAr: 'تم نسخ نص المشاركة', okMsgEn: 'Share text copied'),
-                    ),
+                      const SizedBox(height: 16),
+                      _buildInfoRow(
+                        icon: Icons.location_on_outlined,
+                        title: widget.isAr ? 'الموقع' : 'Location',
+                        value: widget.property.location,
+                      ),
+                      const SizedBox(height: 12),
+                      _buildSection(
+                        title: widget.isAr ? 'الوصف' : 'Description',
+                        child: Text(
+                          widget.property.description,
+                          style: TextStyle(
+                              fontSize: 16, color: cs.onSurfaceVariant),
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+                      _buildSection(
+                        title: widget.isAr
+                            ? 'تفاصيل العقار'
+                            : 'Property Details',
+                        child: Wrap(
+                          spacing: 8,
+                          runSpacing: 8,
+                          children: [
+                            _buildDetailChip(
+                              icon: Icons.square_foot_outlined,
+                              label: widget.isAr
+                                  ? '${widget.property.area.toStringAsFixed(0)} م²'
+                                  : '${widget.property.area.toStringAsFixed(0)} m²',
+                              subtitle: widget.isAr ? 'المساحة' : 'Area',
+                            ),
+                            _buildDetailChip(
+                              icon: Icons.home_outlined,
+                              label: _getTypeLabel(widget.property.type),
+                              subtitle: widget.isAr ? 'النوع' : 'Type',
+                            ),
+                            _buildDetailChip(
+                              icon: Icons.remove_red_eye_outlined,
+                              label: widget.property.views.toString(),
+                              subtitle:
+                                  widget.isAr ? 'المشاهدات' : 'Views',
+                            ),
+                            if (widget.property.isAuction)
+                              _buildDetailChip(
+                                icon: Icons.gavel_outlined,
+                                label: widget.isAr ? 'مزاد' : 'Auction',
+                                subtitle: widget.isAr ? 'الحالة' : 'Status',
+                                color: Colors.orange,
+                              ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+                      _buildPricingSection(),
+                      const SizedBox(height: 16),
+                      _buildCoordinatesSection(),
+                      const SizedBox(height: 24),
+                      _buildCopyButtons(),
+                    ],
                   ),
                 ),
-              ],
-            ),
-            const SizedBox(height: 10),
-
-            Row(
-              children: [
-                Expanded(
-                  child: SizedBox(
-                    height: 50,
-                    child: OutlinedButton.icon(
-                      icon: const Icon(Icons.copy_rounded),
-                      label: Text(widget.isAr ? 'نسخ وصف الإعلان' : 'Copy description'),
-                      onPressed: () => _copy(widget.property.description, okMsgAr: 'تم نسخ الوصف', okMsgEn: 'Description copied'),
-                    ),
-                  ),
-                ),
-              ],
+              ]),
             ),
           ],
         ),
@@ -410,145 +372,67 @@ class _PropertyDetailsPageState extends State<PropertyDetailsPage> {
     );
   }
 
-  // =========================
-  // UI helpers
-  // =========================
-  Widget _infoCard({required bool isDark, required String title, required Widget child}) {
+  // ====== UI helpers (كما هي عندك) ======
+
+  Widget _buildOwnerCard() {
     final cs = Theme.of(context).colorScheme;
-    final textColor = isDark ? Colors.white : cs.onSurface;
-
-    return Container(
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: cs.outlineVariant.withOpacity(0.45)),
-        color: isDark ? Colors.white.withOpacity(0.06) : cs.surfaceContainerHighest,
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(title, style: TextStyle(color: textColor, fontWeight: FontWeight.w900)),
-          const SizedBox(height: 10),
-          child,
-        ],
-      ),
-    );
-  }
-
-  Widget _kv(String k, String v, bool isDark, {bool emphasize = false}) {
-    final cs = Theme.of(context).colorScheme;
-    final textColor = isDark ? Colors.white : cs.onSurface;
-    final subColor = isDark ? Colors.white70 : cs.onSurfaceVariant;
-
-    return Row(
-      children: [
-        Expanded(
-          child: Text(
-            k,
-            style: TextStyle(
-              color: emphasize ? textColor : subColor,
-              fontWeight: emphasize ? FontWeight.w900 : FontWeight.w800,
-            ),
-          ),
-        ),
-        Text(
-          v,
-          style: TextStyle(
-            color: textColor,
-            fontWeight: emphasize ? FontWeight.w900 : FontWeight.w800,
-          ),
-        ),
-      ],
-    );
-  }
-
-  static String _typeLabel(PropertyType t, bool isAr) {
-    switch (t) {
-      case PropertyType.villa:
-        return isAr ? 'فيلا' : 'Villa';
-      case PropertyType.apartment:
-        return isAr ? 'شقة' : 'Apartment';
-      case PropertyType.land:
-        return isAr ? 'أرض' : 'Land';
-    }
-  }
-}
-
-class _AppHeader extends StatelessWidget {
-  final bool isAr;
-  final String? ownerUsername;
-
-  const _AppHeader({required this.isAr, required this.ownerUsername});
-
-  @override
-  Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-
-    final who = (ownerUsername == null || ownerUsername!.trim().isEmpty)
-        ? (isAr ? 'معلن' : 'Owner')
-        : ownerUsername!.trim();
+    final ownerName =
+        widget.ownerUsername?.trim() ?? (widget.isAr ? 'معلن' : 'Owner');
+    final verifiedText = widget.isAr ? 'موثّق' : 'Verified';
 
     return Container(
       decoration: BoxDecoration(
         color: cs.surface,
-        borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: cs.outlineVariant.withOpacity(0.45)),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: cs.outlineVariant.withOpacity(0.5)),
+        boxShadow: [
+          BoxShadow(
+              color: cs.shadow.withOpacity(0.08),
+              blurRadius: 10,
+              offset: const Offset(0, 6)),
+        ],
       ),
-      padding: const EdgeInsets.all(14),
+      padding: const EdgeInsets.all(12),
       child: Row(
         children: [
-          ClipRRect(
-            borderRadius: BorderRadius.circular(14),
-            child: Container(
-              width: 54,
-              height: 54,
-              color: isDark ? Colors.white.withOpacity(0.06) : cs.surfaceContainerHighest,
-              child: Image.asset(
-                'assets/splashscreen.png',
-                fit: BoxFit.cover,
-                errorBuilder: (_, __, ___) => Icon(Icons.home_work_outlined, color: cs.onSurfaceVariant),
-              ),
-            ),
+          CircleAvatar(
+            backgroundColor: const Color(0xFF0F766E).withOpacity(0.12),
+            child: const Icon(Icons.person_outline, color: Color(0xFF0F766E)),
           ),
           const SizedBox(width: 12),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  'Aqar',
-                  style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w900),
-                ),
+                Text(ownerName,
+                    style: const TextStyle(
+                        fontWeight: FontWeight.bold, fontSize: 16)),
                 const SizedBox(height: 4),
-                Text(
-                  isAr ? 'المعلن: $who' : 'Owner: $who',
-                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                        color: cs.onSurfaceVariant,
-                        fontWeight: FontWeight.w800,
-                      ),
-                ),
+                Text(widget.isAr ? 'المعلن' : 'Property Owner',
+                    style:
+                        TextStyle(color: cs.onSurfaceVariant, fontSize: 14)),
               ],
             ),
           ),
           Container(
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
             decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(999),
-              color: const Color(0xFF0F766E).withOpacity(0.12),
-              border: Border.all(color: const Color(0xFF0F766E).withOpacity(0.25)),
+              color: const Color(0xFF0F766E).withOpacity(0.10),
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(
+                  color: const Color(0xFF0F766E).withOpacity(0.30)),
             ),
             child: Row(
               children: [
-                const Icon(Icons.verified_outlined, size: 16, color: Color(0xFF0F766E)),
+                const Icon(Icons.verified_outlined,
+                    size: 16, color: Color(0xFF0F766E)),
                 const SizedBox(width: 6),
                 Text(
-                  isAr ? 'تفاصيل' : 'Details',
+                  verifiedText,
                   style: const TextStyle(
-                    color: Color(0xFF0F766E),
-                    fontWeight: FontWeight.w900,
-                    fontSize: 12,
-                  ),
+                      color: Color(0xFF0F766E),
+                      fontWeight: FontWeight.bold,
+                      fontSize: 12),
                 ),
               ],
             ),
@@ -556,5 +440,283 @@ class _AppHeader extends StatelessWidget {
         ],
       ),
     );
+  }
+
+  Widget _buildInfoRow(
+      {required IconData icon,
+      required String title,
+      required String value}) {
+    final cs = Theme.of(context).colorScheme;
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Icon(icon, color: const Color(0xFF0F766E), size: 20),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(title,
+                  style: const TextStyle(
+                      fontWeight: FontWeight.bold, fontSize: 14)),
+              const SizedBox(height: 4),
+              Text(value,
+                  style: TextStyle(fontSize: 16, color: cs.onSurfaceVariant)),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildSection({required String title, required Widget child}) {
+    final cs = Theme.of(context).colorScheme;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(title,
+            style: const TextStyle(
+                fontWeight: FontWeight.bold,
+                fontSize: 18,
+                color: Color(0xFF0F766E))),
+        const SizedBox(height: 8),
+        Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: cs.surface,
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: cs.outlineVariant.withOpacity(0.5)),
+            boxShadow: [
+              BoxShadow(
+                  color: cs.shadow.withOpacity(0.06),
+                  blurRadius: 8,
+                  offset: const Offset(0, 4))
+            ],
+          ),
+          child: child,
+        ),
+      ],
+    );
+  }
+
+  Widget _buildDetailChip({
+    required IconData icon,
+    required String label,
+    required String subtitle,
+    Color? color,
+  }) {
+    final cs = Theme.of(context).colorScheme;
+    final c = color ?? const Color(0xFF0F766E);
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(
+        color: c.withOpacity(0.10),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: c.withOpacity(0.30)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 16, color: c),
+          const SizedBox(width: 6),
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(label,
+                  style: TextStyle(
+                      color: c, fontWeight: FontWeight.bold, fontSize: 14)),
+              Text(subtitle,
+                  style: TextStyle(color: cs.onSurfaceVariant, fontSize: 10)),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildPricingSection() {
+    return _buildSection(
+      title: widget.isAr ? 'الأسعار والرسوم' : 'Pricing & Fees',
+      child: Column(
+        children: [
+          _buildPriceRow(
+              title: widget.isAr ? 'السعر الأساسي' : 'Base Price',
+              amount: _basePrice,
+              isHighlighted: true),
+          const SizedBox(height: 8),
+          _buildPriceRow(
+              title: '${widget.isAr ? 'الضريبة' : 'VAT'} (5%)',
+              amount: _vatAmount),
+          const SizedBox(height: 8),
+          _buildPriceRow(
+              title: widget.isAr ? 'الإجمالي بعد الضريبة' : 'Total after VAT',
+              amount: _totalAfterVat),
+          const SizedBox(height: 8),
+          _buildPriceRow(
+              title: '${widget.isAr ? 'عمولة المنصة' : 'Platform Fee'} (2.5%)',
+              amount: _platformFee),
+          const Divider(height: 24, thickness: 1.5),
+          _buildPriceRow(
+            title: widget.isAr ? 'الإجمالي النهائي' : 'Final Total',
+            amount: _finalTotal,
+            isHighlighted: true,
+            isTotal: true,
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildPriceRow({
+    required String title,
+    required double amount,
+    bool isHighlighted = false,
+    bool isTotal = false,
+  }) {
+    final cs = Theme.of(context).colorScheme;
+    final color = isTotal ? const Color(0xFF0F766E) : cs.onSurfaceVariant;
+
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      children: [
+        Text(title,
+            style: TextStyle(
+                fontSize: isTotal ? 16 : 14,
+                fontWeight:
+                    isHighlighted ? FontWeight.bold : FontWeight.normal,
+                color: color)),
+        Text('${_formatNumber(amount)} $_currencySymbol',
+            style: TextStyle(
+                fontSize: isTotal ? 18 : 14,
+                fontWeight:
+                    isHighlighted ? FontWeight.bold : FontWeight.normal,
+                color: color)),
+      ],
+    );
+  }
+
+  Widget _buildCoordinatesSection() {
+    final cs = Theme.of(context).colorScheme;
+
+    return _buildSection(
+      title: widget.isAr ? 'الإحداثيات' : 'Coordinates',
+      child: _loadingCoords
+          ? const Center(child: CircularProgressIndicator(strokeWidth: 2))
+          : (lat != null && lng != null)
+              ? Column(
+                  children: [
+                    Row(
+                      children: [
+                        _buildCoordinateItem('Lat', lat!.toStringAsFixed(6)),
+                        const SizedBox(width: 10),
+                        _buildCoordinateItem('Lng', lng!.toStringAsFixed(6)),
+                      ],
+                    ),
+                    const SizedBox(height: 16),
+                    SizedBox(
+                      width: double.infinity,
+                      child: OutlinedButton.icon(
+                        icon: const Icon(Icons.copy_outlined),
+                        label: Text(widget.isAr
+                            ? 'نسخ الإحداثيات'
+                            : 'Copy Coordinates'),
+                        onPressed: () => _copyToClipboard(
+                          '${lat!.toStringAsFixed(6)}, ${lng!.toStringAsFixed(6)}',
+                          successMessage: widget.isAr
+                              ? 'تم نسخ الإحداثيات'
+                              : 'Coordinates copied',
+                        ),
+                      ),
+                    ),
+                  ],
+                )
+              : Center(
+                  child: Text(
+                    widget.isAr
+                        ? 'لا توجد إحداثيات متاحة'
+                        : 'No coordinates available',
+                    style: TextStyle(color: cs.onSurfaceVariant),
+                  ),
+                ),
+    );
+  }
+
+  Widget _buildCoordinateItem(String label, String value) {
+    final cs = Theme.of(context).colorScheme;
+
+    return Expanded(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(label, style: TextStyle(fontSize: 12, color: cs.onSurfaceVariant)),
+          const SizedBox(height: 4),
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              color: cs.surfaceVariant.withOpacity(0.35),
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: cs.outlineVariant.withOpacity(0.6)),
+            ),
+            child: Text(value,
+                style: const TextStyle(fontFamily: 'Monospace', fontSize: 14)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildCopyButtons() {
+    return Column(
+      children: [
+        SizedBox(
+          width: double.infinity,
+          child: ElevatedButton.icon(
+            icon: const Icon(Icons.share_outlined),
+            label: Text(widget.isAr ? 'نسخ نص المشاركة' : 'Copy Share Text'),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF0F766E),
+              foregroundColor: Colors.white,
+              padding: const EdgeInsets.symmetric(vertical: 16),
+              shape:
+                  RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+            ),
+            onPressed: () => _copyToClipboard(_shareText,
+                successMessage:
+                    widget.isAr ? 'تم نسخ نص المشاركة' : 'Share text copied'),
+          ),
+        ),
+        const SizedBox(height: 12),
+        SizedBox(
+          width: double.infinity,
+          child: OutlinedButton.icon(
+            icon: const Icon(Icons.description_outlined),
+            label: Text(widget.isAr ? 'نسخ وصف الإعلان' : 'Copy Description'),
+            style: OutlinedButton.styleFrom(
+              foregroundColor: const Color(0xFF0F766E),
+              padding: const EdgeInsets.symmetric(vertical: 16),
+              shape:
+                  RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+              side: const BorderSide(color: Color(0xFF0F766E)),
+            ),
+            onPressed: () => _copyToClipboard(widget.property.description,
+                successMessage: widget.isAr ? 'تم نسخ الوصف' : 'Description copied'),
+          ),
+        ),
+      ],
+    );
+  }
+
+  String _getTypeLabel(PropertyType type) {
+    switch (type) {
+      case PropertyType.villa:
+        return widget.isAr ? 'فيلا' : 'Villa';
+      case PropertyType.apartment:
+        return widget.isAr ? 'شقة' : 'Apartment';
+      case PropertyType.land:
+        return widget.isAr ? 'أرض' : 'Land';
+    }
   }
 }

@@ -1,5 +1,7 @@
-﻿// lib/services/auth_service.dart
+﻿import 'dart:io';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:device_info_plus/device_info_plus.dart';
+
 import 'package:aqar_user/models.dart';
 
 class LoginResult {
@@ -19,424 +21,343 @@ class LoginResult {
 class AuthService {
   static SupabaseClient get _sb => Supabase.instance.client;
 
-  static const int _maxAttempts = 5;
+  /* ============================================================
+   * Helpers
+   * ============================================================ */
 
-  static Future<void> ensureDefaultAdmin() async {
-    // no-op
-  }
-
-  // ✅ تحويل الأرقام العربية/الفارسية إلى 0-9
+  /// تحويل الأرقام العربية/الفارسية إلى 0-9
   static String normalizeNumbers(String input) {
-    const arabicIndic = ['٠', '١', '٢', '٣', '٤', '٥', '٦', '٧', '٨', '٩'];
-    const easternArabicIndic = ['۰', '۱', '۲', '۳', '۴', '۵', '۶', '۷', '۸', '۹'];
+    const a = ['٠','١','٢','٣','٤','٥','٦','٧','٨','٩'];
+    const e = ['۰','۱','۲','۳','۴','۵','۶','۷','۸','۹'];
     var out = input;
     for (int i = 0; i < 10; i++) {
-      out = out.replaceAll(arabicIndic[i], i.toString());
-      out = out.replaceAll(easternArabicIndic[i], i.toString());
+      out = out.replaceAll(a[i], i.toString());
+      out = out.replaceAll(e[i], i.toString());
     }
     return out;
   }
 
-  /// ✅ 10 أرقام وتبدأ بـ 1 أو 2 (هوية/إقامة)
-  static bool _isValidSaudiIdLikeUsername(String v) {
+  static bool _isValidUsername(String v) {
     final s = normalizeNumbers(v.trim());
-    if (s.length != 10) return false;
-    if (!(s.startsWith('1') || s.startsWith('2'))) return false;
-    for (int i = 0; i < s.length; i++) {
-      final c = s.codeUnitAt(i);
-      if (c < 48 || c > 57) return false;
-    }
-    return true;
+    return RegExp(r'^\d{10}$').hasMatch(s);
   }
 
-  // ✅ متوافق مع lib/models/user_model.dart: user/admin/manager
-  static UserRole _roleFromDb(dynamic v) => AppUser.roleFromDb(v);
-
-  // ✅ متوافق مع lib/models/user_model.dart: user/admin/manager
-  static String _roleToDb(UserRole r) => AppUser.roleToDb(r);
-
-  static AppUser _userFromDb(Map<String, dynamic> j) {
-    return AppUser(
-      username: (j['username'] ?? '').toString(),
-      email: (j['email'] ?? '').toString(),
-      password: (j['password'] ?? '').toString(),
-      recoveryCode: (j['recovery_code'] ?? '').toString(),
-      role: _roleFromDb(j['role']),
-    );
+  static Future<String> _deviceFingerprint() async {
+    final info = DeviceInfoPlugin();
+    try {
+      if (Platform.isAndroid) {
+        final a = await info.androidInfo;
+        return 'android:${a.id}:${a.model}:${a.brand}';
+      }
+      if (Platform.isIOS) {
+        final i = await info.iosInfo;
+        return 'ios:${i.identifierForVendor}:${i.model}';
+      }
+      if (Platform.isWindows) {
+        final w = await info.windowsInfo;
+        return 'win:${w.deviceId}:${w.computerName}';
+      }
+    } catch (_) {}
+    return 'unknown-device';
   }
 
-  static Future<void> _audit({
+  static Future<void> _logSecurity({
+    required String username,
     required String action,
-    String? username,
-    String? email,
     required bool success,
-    String? message,
     String? details,
   }) async {
     try {
-      await _sb.from('auth_audit').insert({
-        'action': action,
-        'username': username,
-        'email': email,
-        'success': success,
-        'message': message,
-        'details': details,
-        'created_at': DateTime.now().toUtc().toIso8601String(),
-      });
+      await _sb.rpc(
+        'log_security_event',
+        params: {
+          'p_username': username,
+          'p_action': action,
+          'p_success': success,
+          'p_details': details,
+        },
+      );
+    } catch (_) {}
+  }
+
+  /* ============================================================
+   * Account status
+   * ============================================================ */
+
+  /// RPC: get_status_by_username
+  static Future<String?> getAccountStatus(String username) async {
+    final u = normalizeNumbers(username).trim();
+    if (!_isValidUsername(u)) return null;
+
+    try {
+      final res = await _sb.rpc(
+        'get_status_by_username',
+        params: {'p_username': u},
+      );
+      return res?.toString();
     } catch (_) {
-      // ignore audit failure
+      return null;
     }
   }
 
-  // =========================
-  // ✅ Used by LoginScreen (DB checks for ✅)
-  // =========================
-  static Future<bool> usernameExists(String username) async {
+  static bool _isLockedStatus(String? status) {
+    return status == 'locked' ||
+           status == 'disabled' ||
+           status == 'suspended' ||
+           status == 'banned';
+  }
+
+  /* ============================================================
+   * Email by username
+   * ============================================================ */
+
+  static Future<String?> getEmailByUsername(String username) async {
     final u = normalizeNumbers(username).trim();
-    if (!_isValidSaudiIdLikeUsername(u)) return false;
+    if (!_isValidUsername(u)) return null;
 
     try {
-      final row = await _sb
-          .from('app_users')
-          .select('username')
-          .eq('username', u)
-          .maybeSingle();
-      return row != null;
+      final res = await _sb.rpc(
+        'get_email_by_national_id',
+        params: {'p_national_id': u},
+      );
+      final email = res?.toString().trim();
+      if (email == null || email.isEmpty || email == 'null') return null;
+      return email;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /* ============================================================
+   * OTP
+   * ============================================================ */
+
+  /// RPC: request_otp
+  static Future<bool> requestOtp(String username) async {
+    final u = normalizeNumbers(username).trim();
+    if (!_isValidUsername(u)) return false;
+
+    try {
+      await _sb.rpc(
+        'request_otp',
+        params: {'p_username': u},
+      );
+      await _logSecurity(
+        username: u,
+        action: 'otp_requested',
+        success: true,
+      );
+      return true;
+    } catch (e) {
+      await _logSecurity(
+        username: u,
+        action: 'otp_requested',
+        success: false,
+        details: e.toString(),
+      );
+      return false;
+    }
+  }
+
+  /* ============================================================
+   * Device trust
+   * ============================================================ */
+
+  static Future<bool> isDeviceKnown(String username) async {
+    final u = normalizeNumbers(username).trim();
+    final fp = await _deviceFingerprint();
+
+    try {
+      final res = await _sb.rpc(
+        'is_device_known',
+        params: {
+          'p_username': u,
+          'p_device_fingerprint': fp,
+        },
+      );
+      return res == true;
     } catch (_) {
       return false;
     }
   }
 
-  /// ⚠️ واجهة فقط (✅) — يعتمد على password النصي (إن كان موجوداً).
-  /// لو جدولك الآن يعتمد password_hash فقط، سيُرجع false دائماً.
-  static Future<bool> credentialsMatch({
-    required String username,
-    required String password,
-  }) async {
+  static Future<void> registerDevice(String username) async {
     final u = normalizeNumbers(username).trim();
-    final pIn = normalizeNumbers(password).trim();
-    if (!_isValidSaudiIdLikeUsername(u)) return false;
-    if (pIn.isEmpty) return false;
+    final fp = await _deviceFingerprint();
 
     try {
-      final row = await _sb
-          .from('app_users')
-          .select('password')
-          .eq('username', u)
-          .maybeSingle();
-
-      if (row == null) return false;
-
-      final dbPassRaw = (row['password'] ?? '').toString();
-      final dbPass = normalizeNumbers(dbPassRaw).trim();
-      return dbPass == pIn;
-    } catch (_) {
-      return false;
+      await _sb.rpc(
+        'register_device',
+        params: {
+          'p_username': u,
+          'p_device_fingerprint': fp,
+        },
+      );
+      await _logSecurity(
+        username: u,
+        action: 'device_registered',
+        success: true,
+      );
+    } catch (e) {
+      await _logSecurity(
+        username: u,
+        action: 'device_registered',
+        success: false,
+        details: e.toString(),
+      );
     }
   }
 
-  // =========================
-  // ✅ NEW: Login via national id -> RPC -> Supabase Auth sign-in (Session)
-  // =========================
+  /* ============================================================
+   * Login (step 1 – before OTP)
+   * ============================================================ */
 
-  /// ✅ يعمل بهذا التسلسل:
-  /// 1) RPC: login_with_national_id(p_national_id, p_password) => يرجع email + ok/message
-  /// 2) signInWithPassword(email, password) => ينشئ Session حقيقي (auth.uid()!=null)
   static Future<LoginResult> login({
     required String username,
     required String password,
     String lang = 'ar',
   }) async {
     final isAr = lang != 'en';
+    final u = normalizeNumbers(username).trim();
 
-    final uName = normalizeNumbers(username).trim();
-    final passIn = normalizeNumbers(password).trim();
-
-    if (!_isValidSaudiIdLikeUsername(uName)) {
+    if (!_isValidUsername(u)) {
       return LoginResult(
         ok: false,
         locked: false,
         message: isAr
-            ? 'اسم المستخدم يجب أن يكون رقم الهوية/الإقامة (10 أرقام ويبدأ بـ 1 أو 2).'
-            : 'Username must be a 10-digit National ID / Iqama (starting with 1 or 2).',
+            ? 'رقم الهوية يجب أن يكون 10 أرقام'
+            : 'Username must be 10 digits',
       );
     }
 
-    if (passIn.isEmpty) {
+    final status = await getAccountStatus(u);
+    if (_isLockedStatus(status)) {
+      await _logSecurity(
+        username: u,
+        action: 'login_blocked',
+        success: false,
+        details: 'status=$status',
+      );
+      return LoginResult(
+        ok: false,
+        locked: true,
+        message: isAr
+            ? 'الحساب مقفل، استخدم استعادة كلمة المرور'
+            : 'Account is locked. Use password recovery.',
+      );
+    }
+
+    final email = await getEmailByUsername(u);
+    if (email == null) {
       return LoginResult(
         ok: false,
         locked: false,
-        message: isAr ? 'كلمة المرور مطلوبة.' : 'Password is required.',
+        message: isAr
+            ? 'لا يوجد حساب مرتبط'
+            : 'No account found',
       );
     }
 
     try {
-      // 1) RPC
-      final rpc = await _sb.rpc('login_with_national_id', params: {
-        // ✅ الأسماء MUST تطابق تعريف الدالة عندك
-        'p_national_id': uName,
-        'p_password': passIn,
-      });
-
-      final Map<String, dynamic> row = (rpc is List && rpc.isNotEmpty)
-          ? Map<String, dynamic>.from(rpc.first as Map)
-          : <String, dynamic>{};
-
-      final ok = row['ok'] == true;
-      final msg = (row['message'] ?? '').toString();
-      final email = (row['email'] ?? '').toString().trim();
-
-      if (!ok) {
-        final locked = msg == 'LOCKED';
-        await _audit(
-          action: 'login',
-          username: uName,
-          email: email.isEmpty ? null : email,
-          success: false,
-          message: msg.isEmpty ? 'rpc_login_failed' : msg,
-        );
-
-        return LoginResult(
-          ok: false,
-          locked: locked,
-          message: locked
-              ? (isAr
-                  ? 'الحساب مؤقتاً مقفل بسبب كثرة المحاولات. حاول لاحقاً.'
-                  : 'Temporarily locked due to too many attempts. Try later.')
-              : (isAr ? 'بيانات الدخول غير صحيحة.' : 'Invalid credentials.'),
-        );
-      }
-
-      if (email.isEmpty) {
-        await _audit(
-          action: 'login',
-          username: uName,
-          success: false,
-          message: 'no_email_returned',
-          details: 'RPC returned ok=true but email is empty',
-        );
-        return LoginResult(
-          ok: false,
-          locked: false,
-          message: isAr ? 'تعذر إكمال تسجيل الدخول.' : 'Unable to complete login.',
-        );
-      }
-
-      // 2) ✅ Session حقيقي
-      await _sb.auth.signInWithPassword(email: email, password: passIn);
-
-      // 3) (اختياري) جلب app_user
-      final appRow = await _sb
-          .from('app_users')
-          .select('username,email,password,recovery_code,role')
-          .eq('username', uName)
-          .maybeSingle();
-
-      await _audit(
-        action: 'login',
-        username: uName,
+      await _sb.auth.signInWithPassword(
         email: email,
-        success: true,
-        message: 'ok',
-      );
-
-      return LoginResult(
-        ok: true,
-        locked: false,
-        message: '',
-        user: appRow == null ? null : _userFromDb(Map<String, dynamic>.from(appRow)),
+        password: password,
       );
     } on AuthException catch (e) {
-      await _audit(
-        action: 'login',
-        username: uName,
+      await _logSecurity(
+        username: u,
+        action: 'login_password_failed',
         success: false,
-        message: 'auth_exception',
         details: e.message,
       );
       return LoginResult(
         ok: false,
         locked: false,
-        message: e.message,
+        message: isAr
+            ? 'كلمة المرور غير صحيحة'
+            : 'Wrong password',
       );
-    } catch (e) {
-      await _audit(
-        action: 'login',
-        username: uName,
-        success: false,
-        message: 'exception',
-        details: e.toString(),
-      );
+    }
+
+    await _logSecurity(
+      username: u,
+      action: 'login_password_ok',
+      success: true,
+    );
+
+    return LoginResult(
+      ok: true,
+      locked: false,
+      message: '',
+    );
+  }
+
+  /* ============================================================
+   * Password recovery
+   * ============================================================ */
+
+  static Future<LoginResult> sendResetPasswordEmail({
+    required String username,
+    String lang = 'ar',
+    String? redirectTo,
+  }) async {
+    final isAr = lang != 'en';
+    final u = normalizeNumbers(username).trim();
+
+    if (!_isValidUsername(u)) {
       return LoginResult(
         ok: false,
         locked: false,
-        message: isAr ? 'حدث خطأ أثناء تسجيل الدخول.' : 'An error occurred during login.',
+        message: isAr
+            ? 'رقم الهوية غير صحيح'
+            : 'Invalid username',
       );
     }
-  }
 
-  // =========================
-  // Verify + Reset Password (كما هو عندك)
-  // =========================
-  static Future<LoginResult> verifyAndReset({
-    String? username,
-    String? email,
-    required String recoveryCode,
-    required String newPassword,
-    String lang = 'ar',
-  }) async {
-    final isAr = lang != 'en';
-    final uName = normalizeNumbers((username ?? '')).trim();
-    final em = (email ?? '').trim();
+    final email = await getEmailByUsername(u);
+    if (email == null) {
+      return LoginResult(
+        ok: false,
+        locked: false,
+        message: isAr
+            ? 'لا يوجد حساب'
+            : 'No account found',
+      );
+    }
 
     try {
-      Map<String, dynamic>? row;
+      await _sb.auth.resetPasswordForEmail(
+        email,
+        redirectTo: redirectTo,
+      );
 
-      if (uName.isNotEmpty) {
-        row = await _sb
-            .from('app_users')
-            .select('username,email,password,recovery_code,role,failed_attempts,locked')
-            .eq('username', uName)
-            .maybeSingle();
-      } else if (em.isNotEmpty) {
-        row = await _sb
-            .from('app_users')
-            .select('username,email,password,recovery_code,role,failed_attempts,locked')
-            .eq('email', em.toLowerCase())
-            .maybeSingle();
-      }
-
-      if (row == null) {
-        await _audit(
-          action: 'reset_password',
-          username: uName.isNotEmpty ? uName : null,
-          email: em.isNotEmpty ? em : null,
-          success: false,
-          message: 'user_not_found',
-        );
-        return LoginResult(
-          ok: false,
-          locked: false,
-          message: isAr ? 'الحساب غير موجود.' : 'Account not found.',
-        );
-      }
-
-      final dbRecovery =
-          normalizeNumbers((row['recovery_code'] ?? '').toString()).trim();
-      final rcIn = normalizeNumbers(recoveryCode).trim();
-
-      if (dbRecovery != rcIn) {
-        await _audit(
-          action: 'reset_password',
-          username: (row['username'] ?? '').toString(),
-          email: (row['email'] ?? '').toString(),
-          success: false,
-          message: 'invalid_recovery_code',
-        );
-        return LoginResult(
-          ok: false,
-          locked: (row['locked'] ?? false) as bool,
-          message: isAr ? 'رمز الاستعادة غير صحيح.' : 'Invalid recovery code.',
-        );
-      }
-
-      await _sb.from('app_users').update({
-        'password': newPassword,
-        'failed_attempts': 0,
-        'locked': false,
-        'updated_at': DateTime.now().toUtc().toIso8601String(),
-      }).eq('username', (row['username'] ?? '').toString());
-
-      final updated = await _sb
-          .from('app_users')
-          .select('username,email,password,recovery_code,role,failed_attempts,locked')
-          .eq('username', (row['username'] ?? '').toString())
-          .maybeSingle();
-
-      await _audit(
-        action: 'reset_password',
-        username: (row['username'] ?? '').toString(),
-        email: (row['email'] ?? '').toString(),
+      await _logSecurity(
+        username: u,
+        action: 'password_recovery_sent',
         success: true,
-        message: 'password_updated_unlocked',
       );
 
       return LoginResult(
         ok: true,
         locked: false,
         message: isAr
-            ? 'تم تحديث كلمة المرور وفتح الحساب.'
-            : 'Password updated and account unlocked.',
-        user: updated == null ? null : _userFromDb(Map<String, dynamic>.from(updated)),
+            ? 'تم إرسال رابط استعادة كلمة المرور'
+            : 'Recovery email sent',
       );
     } catch (e) {
-      await _audit(
-        action: 'reset_password',
-        username: uName.isNotEmpty ? uName : null,
-        email: em.isNotEmpty ? em : null,
+      await _logSecurity(
+        username: u,
+        action: 'password_recovery_failed',
         success: false,
-        message: 'exception',
         details: e.toString(),
       );
       return LoginResult(
         ok: false,
         locked: false,
         message: isAr
-            ? 'حدث خطأ أثناء إعادة تعيين كلمة المرور.'
-            : 'An error occurred while resetting the password.',
+            ? 'فشل الإرسال'
+            : 'Failed to send email',
       );
     }
-  }
-
-  // =========================
-  // Manual Unlock (اختياري)
-  // =========================
-  static Future<void> unlockAccount(String username) async {
-    final uName = normalizeNumbers(username).trim();
-    try {
-      await _sb.from('app_users').update({
-        'failed_attempts': 0,
-        'locked': false,
-        'updated_at': DateTime.now().toUtc().toIso8601String(),
-      }).eq('username', uName);
-
-      await _audit(
-        action: 'unlock_account',
-        username: uName,
-        success: true,
-        message: 'unlocked',
-      );
-    } catch (e) {
-      await _audit(
-        action: 'unlock_account',
-        username: uName,
-        success: false,
-        message: 'exception',
-        details: e.toString(),
-      );
-    }
-  }
-
-  // =========================
-  // Create/Update user (اختياري للإدارة)
-  // =========================
-  static Future<void> upsertUser({
-    required String username,
-    required String email,
-    required String password,
-    required String recoveryCode,
-    required UserRole role,
-  }) async {
-    final uName = normalizeNumbers(username).trim();
-    await _sb.from('app_users').upsert({
-      'username': uName,
-      'email': email.trim().toLowerCase(),
-      'password': password, // إذا انتقلت للهاش لاحقاً، لا تخزن نص
-      'recovery_code': recoveryCode,
-      'role': _roleToDb(role),
-      'failed_attempts': 0,
-      'locked': false,
-      'updated_at': DateTime.now().toUtc().toIso8601String(),
-    }, onConflict: 'username');
   }
 }

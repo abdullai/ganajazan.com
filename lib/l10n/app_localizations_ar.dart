@@ -45,6 +45,9 @@ class AppLocalizationsAr extends AppLocalizations {
   String get forgotUsernameOrPassword => 'نسيت اسم المستخدم أو كلمة المرور؟';
 
   @override
+  String get theme => 'المظهر';
+
+  @override
   String get themeLight => 'فاتح';
 
   @override
@@ -52,6 +55,9 @@ class AppLocalizationsAr extends AppLocalizations {
 
   @override
   String get themeSystem => 'حسب النظام';
+
+  @override
+  String get language => 'اللغة';
 
   @override
   String get languageArabic => 'العربية';
@@ -90,6 +96,9 @@ class AppLocalizationsAr extends AppLocalizations {
 
   @override
   String get verifyTitle => 'التحقق';
+
+  @override
+  String get otpTitle => 'التحقق';
 
   @override
   String get verifySubtitle => 'أدخل رمز التحقق';

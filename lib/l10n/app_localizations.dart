@@ -170,6 +170,12 @@ abstract class AppLocalizations {
   /// **'Forgot username or password?'**
   String get forgotUsernameOrPassword;
 
+  /// No description provided for @theme.
+  ///
+  /// In en, this message translates to:
+  /// **'Appearance'**
+  String get theme;
+
   /// No description provided for @themeLight.
   ///
   /// In en, this message translates to:
@@ -187,6 +193,12 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'System'**
   String get themeSystem;
+
+  /// No description provided for @language.
+  ///
+  /// In en, this message translates to:
+  /// **'Language'**
+  String get language;
 
   /// No description provided for @languageArabic.
   ///
@@ -259,6 +271,12 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Verification'**
   String get verifyTitle;
+
+  /// No description provided for @otpTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Verification'**
+  String get otpTitle;
 
   /// No description provided for @verifySubtitle.
   ///

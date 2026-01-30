@@ -45,6 +45,9 @@ class AppLocalizationsEn extends AppLocalizations {
   String get forgotUsernameOrPassword => 'Forgot username or password?';
 
   @override
+  String get theme => 'Appearance';
+
+  @override
   String get themeLight => 'Light';
 
   @override
@@ -52,6 +55,9 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get themeSystem => 'System';
+
+  @override
+  String get language => 'Language';
 
   @override
   String get languageArabic => 'العربية';
@@ -90,6 +96,9 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get verifyTitle => 'Verification';
+
+  @override
+  String get otpTitle => 'Verification';
 
   @override
   String get verifySubtitle => 'Enter the verification code';
